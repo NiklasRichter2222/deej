@@ -112,6 +112,7 @@ func (sio *SerialIO) Start() error {
 	// if we're set to send data on startup, do that now
 	if sio.deej.config.SendOnStartup {
 		sio.sendColors(namedLogger)
+		sio.sendBackgroundLighting(namedLogger)
 	}
 
 	// read lines or await a stop
@@ -190,6 +191,19 @@ func (sio *SerialIO) sendColors(logger *zap.SugaredLogger) {
 	}
 }
 
+func (sio *SerialIO) sendBackgroundLighting(logger *zap.SugaredLogger) {
+	logger.Debug("Sending background lighting setting to Arduino")
+	bgSetting := sio.deej.config.BackgroundLighting
+
+	// strip '#' from hex code if it exists
+	bgSetting = strings.TrimPrefix(bgSetting, "#")
+
+	line := fmt.Sprintf("B:%s", bgSetting)
+	if err := sio.WriteLine(line); err != nil {
+		logger.Warnw("Failed to send background lighting setting", "error", err)
+	}
+}
+
 func (sio *SerialIO) setupOnConfigReload() {
 	configReloadedChannel := sio.deej.config.SubscribeToChanges()
 
@@ -229,6 +243,7 @@ func (sio *SerialIO) setupOnConfigReload() {
 					// if only non-connection params have changed, maybe send colors again
 					if sio.deej.config.SendOnStartup {
 						sio.sendColors(sio.logger)
+						sio.sendBackgroundLighting(sio.logger)
 					}
 				}
 			}

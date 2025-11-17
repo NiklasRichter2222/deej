@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package deej
 
 import (
@@ -10,7 +13,15 @@ import (
 
 	ole "github.com/go-ole/go-ole"
 	wca "github.com/moutend/go-wca"
+	ps "github.com/mitchellh/go-ps"
 	"go.uber.org/zap"
+	"golang.org/x/sys/windows"
+)
+
+var (
+	user32                  = windows.NewLazySystemDLL("user32.dll")
+	getForegroundWindow     = user32.NewProc("GetForegroundWindow")
+	getWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
 )
 
 type wcaSessionFinder struct {
@@ -27,6 +38,8 @@ type wcaSessionFinder struct {
 	// our master input and output sessions
 	masterOut *masterSession
 	masterIn  *masterSession
+
+	oleInitialized bool
 }
 
 const (
@@ -148,13 +161,30 @@ func (sf *wcaSessionFinder) GetAllSessions() ([]Session, error) {
 }
 
 func (sf *wcaSessionFinder) Release() error {
+	// release COM/Windows resources if they were created
+	// IMMNotificationClient is a COM callback object we allocated; there is no Release
+	// method on the thin wrapper type. If we registered it with the device enumerator,
+	// we should unregister it, but that happens elsewhere when appropriate. Just
+	// nil the reference here to avoid illegal calls.
+	if sf.mmNotificationClient != nil {
+		sf.mmNotificationClient = nil
+	}
 
-	// skip unregistering the mmnotificationclient, as it's not implemented in go-wca
 	if sf.mmDeviceEnumerator != nil {
 		sf.mmDeviceEnumerator.Release()
 	}
 
-	sf.logger.Debug("Released WCA session finder instance")
+	if sf.masterOut != nil {
+		sf.masterOut.Release()
+	}
+
+	if sf.masterIn != nil {
+		sf.masterIn.Release()
+	}
+
+	if sf.oleInitialized {
+		ole.CoUninitialize()
+	}
 
 	return nil
 }
@@ -538,4 +568,36 @@ func (sf *wcaSessionFinder) defaultDeviceChangedCallback(
 }
 func (sf *wcaSessionFinder) noopCallback() (hResult uintptr) {
 	return
+}
+
+func (sf *wcaSessionFinder) GetForegroundProcessName() (string, error) {
+	fgWin, _, err := getForegroundWindow.Call()
+	if fgWin == 0 {
+		// Check for actual error if needed, but often it's just no window
+		if err != nil && err.Error() != "The operation completed successfully." {
+			return "", fmt.Errorf("get foreground window: %w", err)
+		}
+		return "", nil
+	}
+
+	var pid uint32
+	_, _, err = getWindowThreadProcessId.Call(fgWin, uintptr(unsafe.Pointer(&pid)))
+	if err != nil && err.Error() != "The operation completed successfully." {
+		return "", fmt.Errorf("get window thread process id: %w", err)
+	}
+
+	if pid == 0 {
+		return "", nil
+	}
+
+	process, err := ps.FindProcess(int(pid))
+	if err != nil {
+		return "", fmt.Errorf("find process by pid: %w", err)
+	}
+
+	if process == nil {
+		return "", nil
+	}
+
+	return process.Executable(), nil
 }

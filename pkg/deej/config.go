@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"strconv"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -28,6 +29,7 @@ type CanonicalConfig struct {
 	SyncVolumes         bool
 	ColorMapping        map[int]struct{ Zero, Full string }
 	NoiseReductionLevel string
+	BackgroundLighting  string
 
 	logger             *zap.SugaredLogger
 	notifier           Notifier
@@ -58,6 +60,7 @@ const (
 	configKeySendOnStartup       = "send_on_startup"
 	configKeySyncVolumes         = "sync_volumes"
 	configKeyColorMapping        = "color_mapping"
+	configKeyBackgroundLighting  = "background_lighting"
 
 	defaultCOMPort  = "COM4"
 	defaultBaudRate = 9600
@@ -97,6 +100,7 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	userConfig.SetDefault(configKeySendOnStartup, false)
 	userConfig.SetDefault(configKeySyncVolumes, false)
 	userConfig.SetDefault(configKeyColorMapping, map[string]map[string]string{})
+	userConfig.SetDefault(configKeyBackgroundLighting, "rgb")
 
 	internalConfig := viper.New()
 	internalConfig.SetConfigName(internalConfigName)
@@ -156,7 +160,8 @@ func (cc *CanonicalConfig) Load() error {
 		"connectionInfo", cc.ConnectionInfo,
 		"invertSliders", cc.InvertSliders,
 		"sendOnStartup", cc.SendOnStartup,
-		"syncVolumes", cc.SyncVolumes)
+		"syncVolumes", cc.SyncVolumes,
+		"backgroundLighting", cc.BackgroundLighting)
 
 	return nil
 }
@@ -250,6 +255,7 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 	cc.NoiseReductionLevel = cc.userConfig.GetString(configKeyNoiseReductionLevel)
 	cc.SendOnStartup = cc.userConfig.GetBool(configKeySendOnStartup)
 	cc.SyncVolumes = cc.userConfig.GetBool(configKeySyncVolumes)
+	cc.BackgroundLighting = cc.userConfig.GetString(configKeyBackgroundLighting)
 
 	// parse color mapping
 	var rawColorMapping map[string]map[string]string
@@ -258,7 +264,7 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 	} else {
 		cc.ColorMapping = make(map[int]struct{ Zero, Full string })
 		for sliderIDStr, colors := range rawColorMapping {
-			sliderID, err := util.Atoi(sliderIDStr)
+			sliderID, err := strconv.Atoi(sliderIDStr)
 			if err != nil {
 				cc.logger.Warnw("Invalid slider ID in color mapping key", "key", sliderIDStr, "error", err)
 				continue

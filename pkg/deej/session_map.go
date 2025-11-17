@@ -229,8 +229,7 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 		return
 	}
 
-	targetFound := false
-	adjustmentFailed := false
+	// track whether we matched any target for logging/debugging (not currently used)
 
 	// for each possible target for this slider...
 	for _, target := range targets {
@@ -250,7 +249,7 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 				continue
 			}
 
-			targetFound = true
+			// matched at least one session for this resolved target
 
 			// iterate all matching sessions and adjust the volume of each one
 			for _, session := range sessions {
@@ -272,143 +271,41 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 	}
 }
 
-func (m *sessionMap) sendAllSliderVolumes() {
-	m.logger.Debug("Sending all slider volumes to Arduino")
+func (m *sessionMap) handleCurrentAppVolume() {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
+	// Find which slider is mapped to "deej.current"
+	var currentAppSliderID = -1
+	var currentTarget string
+
 	m.deej.config.SliderMapping.iterate(func(sliderID int, targets []string) {
-		if len(targets) > 0 {
-			target := targets[0]
-			sessions := m.get(target)
-
-			if len(sessions) > 0 {
-				session := sessions[0]
-				volume := session.GetVolume()
-
-				line := fmt.Sprintf("V:%d:%.4f", sliderID, volume)
-				if err := m.deej.serial.WriteLine(line); err != nil {
-					m.logger.Warnw("Failed to send initial volume for slider", "sliderID", sliderID, "error", err)
-				}
-			}
-		}
-	})
-}
-
-// performance: explain why force == true at every such use to avoid unintended forced refresh spams
-func (m *sessionMap) refreshSessions(force bool) {
-
-	// make sure enough time passed since the last refresh, unless force is true in which case always clear
-	if !force && m.lastSessionRefresh.Add(minTimeBetweenSessionRefreshes).After(time.Now()) {
-		return
-	}
-
-	// clear and release sessions first
-	m.clear()
-
-	if err := m.getAndAddSessions(); err != nil {
-		m.logger.Warnw("Failed to re-acquire all audio sessions", "error", err)
-	} else {
-		m.logger.Debug("Re-acquired sessions successfully")
-	}
-}
-
-// returns true if a session is not currently mapped to any slider, false otherwise
-// special sessions (master, system, mic) and device-specific sessions always count as mapped,
-// even when absent from the config. this makes sense for every current feature that uses "unmapped sessions"
-func (m *sessionMap) sessionMapped(session Session) bool {
-
-	// count master/system/mic as mapped
-	if funk.ContainsString([]string{masterSessionName, systemSessionName, inputSessionName}, session.Key()) {
-		return true
-	}
-
-	// count device sessions as mapped
-	if deviceSessionKeyPattern.MatchString(session.Key()) {
-		return true
-	}
-
-	matchFound := false
-
-	// look through the actual mappings
-	m.deej.config.SliderMapping.iterate(func(sliderIdx int, targets []string) {
 		for _, target := range targets {
-
-			// ignore special transforms
-			if m.targetHasSpecialTransform(target) {
-				continue
-			}
-
-			// safe to assume this has a single element because we made sure there's no special transform
-			target = m.resolveTarget(target)[0]
-
-			if target == session.Key() {
-				matchFound = true
+			if target == specialTargetTransformPrefix+specialTargetCurrentWindow {
+				currentAppSliderID = sliderID
+				currentTarget = target
 				return
 			}
 		}
 	})
 
-	return matchFound
-}
-
-func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	// first of all, ensure our session map isn't moldy
-	if m.lastSessionRefresh.Add(maxTimeBetweenSessionRefreshes).Before(time.Now()) {
-		m.logger.Debug("Stale session map detected on slider move, refreshing")
-		m.refreshSessions(true)
-	}
-
-	// get the targets mapped to this slider from the config
-	targets, ok := m.deej.config.SliderMapping.get(event.SliderID)
-
-	// if slider not found in config, silently ignore
-	if !ok {
+	// if no slider is mapped to the current app, do nothing
+	if currentAppSliderID == -1 {
 		return
 	}
 
-	targetFound := false
-	adjustmentFailed := false
+	// get the session for the current app
+	sessions, ok := m.get(currentTarget)
+	if ok && len(sessions) > 0 {
+		session := sessions[0]
+		volume := session.GetVolume()
 
-	// for each possible target for this slider...
-	for _, target := range targets {
-
-		// resolve the target name by cleaning it up and applying any special transformations.
-		// depending on the transformation applied, this can result in more than one target name
-		resolvedTargets := m.resolveTarget(target)
-
-		// for each resolved target...
-		for _, resolvedTarget := range resolvedTargets {
-
-			// check the map for matching sessions
-			sessions, ok := m.get(resolvedTarget)
-
-			// no sessions matching this target - move on
-			if !ok {
-				continue
-			}
-
-			targetFound = true
-
-			// iterate all matching sessions and adjust the volume of each one
-			for _, session := range sessions {
-				if session.GetVolume() != event.PercentValue {
-					if err := session.SetVolume(event.PercentValue); err != nil {
-						m.logger.Warnw("Failed to set session volume", "session", session, "error", err)
-					}
-				}
-			}
-		}
-	}
-
-	// if sync is enabled, send the new volume value over serial
-	if m.deej.config.SyncVolumes {
-		line := fmt.Sprintf("V:%d:%.4f", event.SliderID, event.PercentValue)
+		// send its volume to the arduino
+		line := fmt.Sprintf("V:%d:%.4f", currentAppSliderID, volume)
 		if err := m.deej.serial.WriteLine(line); err != nil {
-			m.logger.Warnw("Failed to send volume update to serial", "error", err)
+			m.logger.Warnw("Failed to send current app volume update to serial", "error", err)
+		} else {
+			m.logger.Debugw("Sent current app volume update", "sliderID", currentAppSliderID, "volume", volume)
 		}
 	}
 }
@@ -421,9 +318,9 @@ func (m *sessionMap) sendAllSliderVolumes() {
 	m.deej.config.SliderMapping.iterate(func(sliderID int, targets []string) {
 		if len(targets) > 0 {
 			target := targets[0]
-			sessions := m.get(target)
+			sessions, ok := m.get(target)
 
-			if len(sessions) > 0 {
+			if ok && len(sessions) > 0 {
 				session := sessions[0]
 				volume := session.GetVolume()
 
@@ -435,148 +332,6 @@ func (m *sessionMap) sendAllSliderVolumes() {
 		}
 	})
 }
-
-// performance: explain why force == true at every such use to avoid unintended forced refresh spams
-func (m *sessionMap) refreshSessions(force bool) {
-
-	// make sure enough time passed since the last refresh, unless force is true in which case always clear
-	if !force && m.lastSessionRefresh.Add(minTimeBetweenSessionRefreshes).After(time.Now()) {
-		return
-	}
-
-	// clear and release sessions first
-	m.clear()
-
-	if err := m.getAndAddSessions(); err != nil {
-		m.logger.Warnw("Failed to re-acquire all audio sessions", "error", err)
-	} else {
-		m.logger.Debug("Re-acquired sessions successfully")
-	}
-}
-
-// returns true if a session is not currently mapped to any slider, false otherwise
-// special sessions (master, system, mic) and device-specific sessions always count as mapped,
-// even when absent from the config. this makes sense for every current feature that uses "unmapped sessions"
-func (m *sessionMap) sessionMapped(session Session) bool {
-
-	// count master/system/mic as mapped
-	if funk.ContainsString([]string{masterSessionName, systemSessionName, inputSessionName}, session.Key()) {
-		return true
-	}
-
-	// count device sessions as mapped
-	if deviceSessionKeyPattern.MatchString(session.Key()) {
-		return true
-	}
-
-	matchFound := false
-
-	// look through the actual mappings
-	m.deej.config.SliderMapping.iterate(func(sliderIdx int, targets []string) {
-		for _, target := range targets {
-
-			// ignore special transforms
-			if m.targetHasSpecialTransform(target) {
-				continue
-			}
-
-			// safe to assume this has a single element because we made sure there's no special transform
-			target = m.resolveTarget(target)[0]
-
-			if target == session.Key() {
-				matchFound = true
-				return
-			}
-		}
-	})
-
-	return matchFound
-}
-
-func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	// first of all, ensure our session map isn't moldy
-	if m.lastSessionRefresh.Add(maxTimeBetweenSessionRefreshes).Before(time.Now()) {
-		m.logger.Debug("Stale session map detected on slider move, refreshing")
-		m.refreshSessions(true)
-	}
-
-	// get the targets mapped to this slider from the config
-	targets, ok := m.deej.config.SliderMapping.get(event.SliderID)
-
-	// if slider not found in config, silently ignore
-	if !ok {
-		return
-	}
-
-	targetFound := false
-	adjustmentFailed := false
-
-	// for each possible target for this slider...
-	for _, target := range targets {
-
-		// resolve the target name by cleaning it up and applying any special transformations.
-		// depending on the transformation applied, this can result in more than one target name
-		resolvedTargets := m.resolveTarget(target)
-
-		// for each resolved target...
-		for _, resolvedTarget := range resolvedTargets {
-
-			// check the map for matching sessions
-			sessions, ok := m.get(resolvedTarget)
-
-			// no sessions matching this target - move on
-			if !ok {
-				continue
-			}
-
-			targetFound = true
-
-			// iterate all matching sessions and adjust the volume of each one
-			for _, session := range sessions {
-				if session.GetVolume() != event.PercentValue {
-					if err := session.SetVolume(event.PercentValue); err != nil {
-						m.logger.Warnw("Failed to set session volume", "session", session, "error", err)
-					}
-				}
-			}
-		}
-	}
-
-	// if sync is enabled, send the new volume value over serial
-	if m.deej.config.SyncVolumes {
-		line := fmt.Sprintf("V:%d:%.4f", event.SliderID, event.PercentValue)
-		if err := m.deej.serial.WriteLine(line); err != nil {
-			m.logger.Warnw("Failed to send volume update to serial", "error", err)
-		}
-	}
-}
-
-func (m *sessionMap) sendAllSliderVolumes() {
-	m.logger.Debug("Sending all slider volumes to Arduino")
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	m.deej.config.SliderMapping.iterate(func(sliderID int, targets []string) {
-		if len(targets) > 0 {
-			target := targets[0]
-			sessions := m.get(target)
-
-			if len(sessions) > 0 {
-				session := sessions[0]
-				volume := session.GetVolume()
-
-				line := fmt.Sprintf("V:%d:%.4f", sliderID, volume)
-				if err := m.deej.serial.WriteLine(line); err != nil {
-					m.logger.Warnw("Failed to send initial volume for slider", "sliderID", sliderID, "error", err)
-				}
-			}
-		}
-	})
-}
-
 func (m *sessionMap) targetHasSpecialTransform(target string) bool {
 	return strings.HasPrefix(target, specialTargetTransformPrefix)
 }

@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 package deej
 
 import (
@@ -9,11 +12,16 @@ import (
 )
 
 type paSessionFinder struct {
-	logger        *zap.SugaredLogger
-	sessionLogger *zap.SugaredLogger
+	logger *zap.SugaredLogger
 
-	client *proto.Client
-	conn   net.Conn
+	wcaManager *wca.IAudioSessionManager2
+	wcaEvents  *wcaEvents
+
+	oleInitialized bool
+}
+
+func (sf *paSessionFinder) GetForegroundProcessName() (string, error) {
+	return "", nil
 }
 
 func newSessionFinder(logger *zap.SugaredLogger) (SessionFinder, error) {
