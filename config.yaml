@@ -25,3 +25,28 @@ baud_rate: 9600
 # adjust the amount of signal noise reduction depending on your hardware quality
 # supported values are "low" (excellent hardware), "default" (regular hardware) or "high" (bad, noisy hardware)
 noise_reduction: default
+
+# settings for sending data to the arduino board
+# send current volumes to the arduino on deej boot
+send_on_startup: true
+# continously update the arduino if a volume changes
+sync_volumes: true
+
+# color mapping for each slider, from 0% to 100% volume
+# colors are sent as hex values (e.g. #ff0000)
+color_mapping:
+  0:
+    zero: '#ff0000'
+    full: '#00ff00'
+  1:
+    zero: '#ff0000'
+    full: '#00ff00'
+  2:
+    zero: '#ff0000'
+    full: '#00ff00'
+  3:
+    zero: '#ff0000'
+    full: '#00ff00'
+  4:
+    zero: '#ff0000'
+    full: '#00ff00'

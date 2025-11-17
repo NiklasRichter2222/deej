@@ -23,8 +23,10 @@ type CanonicalConfig struct {
 		BaudRate int
 	}
 
-	InvertSliders bool
-
+	InvertSliders       bool
+	SendOnStartup       bool
+	SyncVolumes         bool
+	ColorMapping        map[int]struct{ Zero, Full string }
 	NoiseReductionLevel string
 
 	logger             *zap.SugaredLogger
@@ -53,6 +55,9 @@ const (
 	configKeyCOMPort             = "com_port"
 	configKeyBaudRate            = "baud_rate"
 	configKeyNoiseReductionLevel = "noise_reduction"
+	configKeySendOnStartup       = "send_on_startup"
+	configKeySyncVolumes         = "sync_volumes"
+	configKeyColorMapping        = "color_mapping"
 
 	defaultCOMPort  = "COM4"
 	defaultBaudRate = 9600
@@ -89,6 +94,9 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	userConfig.SetDefault(configKeyInvertSliders, false)
 	userConfig.SetDefault(configKeyCOMPort, defaultCOMPort)
 	userConfig.SetDefault(configKeyBaudRate, defaultBaudRate)
+	userConfig.SetDefault(configKeySendOnStartup, false)
+	userConfig.SetDefault(configKeySyncVolumes, false)
+	userConfig.SetDefault(configKeyColorMapping, map[string]map[string]string{})
 
 	internalConfig := viper.New()
 	internalConfig.SetConfigName(internalConfigName)
@@ -146,7 +154,9 @@ func (cc *CanonicalConfig) Load() error {
 	cc.logger.Infow("Config values",
 		"sliderMapping", cc.SliderMapping,
 		"connectionInfo", cc.ConnectionInfo,
-		"invertSliders", cc.InvertSliders)
+		"invertSliders", cc.InvertSliders,
+		"sendOnStartup", cc.SendOnStartup,
+		"syncVolumes", cc.SyncVolumes)
 
 	return nil
 }
@@ -238,6 +248,28 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 
 	cc.InvertSliders = cc.userConfig.GetBool(configKeyInvertSliders)
 	cc.NoiseReductionLevel = cc.userConfig.GetString(configKeyNoiseReductionLevel)
+	cc.SendOnStartup = cc.userConfig.GetBool(configKeySendOnStartup)
+	cc.SyncVolumes = cc.userConfig.GetBool(configKeySyncVolumes)
+
+	// parse color mapping
+	var rawColorMapping map[string]map[string]string
+	if err := cc.userConfig.UnmarshalKey(configKeyColorMapping, &rawColorMapping); err != nil {
+		cc.logger.Warnw("Failed to parse color mapping from config", "error", err)
+	} else {
+		cc.ColorMapping = make(map[int]struct{ Zero, Full string })
+		for sliderIDStr, colors := range rawColorMapping {
+			sliderID, err := util.Atoi(sliderIDStr)
+			if err != nil {
+				cc.logger.Warnw("Invalid slider ID in color mapping key", "key", sliderIDStr, "error", err)
+				continue
+			}
+
+			cc.ColorMapping[sliderID] = struct{ Zero, Full string }{
+				Zero: colors["zero"],
+				Full: colors["full"],
+			}
+		}
+	}
 
 	cc.logger.Debug("Populated config fields from vipers")
 

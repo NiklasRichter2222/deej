@@ -196,3 +196,86 @@ func (s *masterSession) String() string {
 func (s *masterSession) markAsStale() {
 	s.stale = true
 }
+
+// ReadMasterVolume returns the current master (default output device) volume as a scalar between 0.0 and 1.0.
+// It enumerates audio sessions and returns the first session whose key equals the master session name.
+func ReadMasterVolume() (float32, error) {
+	logger := zap.NewNop().Sugar()
+	sf, err := newSessionFinder(logger)
+	if err != nil {
+		return 0, fmt.Errorf("create session finder: %w", err)
+	}
+	defer sf.Release()
+
+	sessions, err := sf.GetAllSessions()
+	if err != nil {
+		return 0, fmt.Errorf("get all sessions: %w", err)
+	}
+
+	for _, s := range sessions {
+		if s.Key() == masterSessionName {
+			return s.GetVolume(), nil
+		}
+	}
+
+	return 0, fmt.Errorf("master session not found")
+}
+
+// ReadAppVolumeByName looks up an application's audio session by process name (case-insensitive)
+// and returns its current volume as a scalar between 0.0 and 1.0. The provided name may include
+// or omit the ".exe" suffix; the function will check both variants.
+func ReadAppVolumeByName(name string) (float32, error) {
+	logger := zap.NewNop().Sugar()
+	sf, err := newSessionFinder(logger)
+	if err != nil {
+		return 0, fmt.Errorf("create session finder: %w", err)
+	}
+	defer sf.Release()
+
+	sessions, err := sf.GetAllSessions()
+	if err != nil {
+		return 0, fmt.Errorf("get all sessions: %w", err)
+	}
+
+	target := strings.ToLower(name)
+	alt := target
+	if !strings.HasSuffix(target, ".exe") {
+		alt = target + ".exe"
+	}
+
+	for _, s := range sessions {
+		k := s.Key()
+		if k == target || k == alt {
+			return s.GetVolume(), nil
+		}
+	}
+
+	return 0, fmt.Errorf("no audio session found for process '%s'", name)
+}
+
+// ReadAppVolumeByPID looks up an application's audio session by process ID and returns its current
+// volume as a scalar between 0.0 and 1.0. This is Windows-specific and relies on the concrete
+// `wcaSession` type, which exposes the PID.
+func ReadAppVolumeByPID(pid int) (float32, error) {
+	logger := zap.NewNop().Sugar()
+	sf, err := newSessionFinder(logger)
+	if err != nil {
+		return 0, fmt.Errorf("create session finder: %w", err)
+	}
+	defer sf.Release()
+
+	sessions, err := sf.GetAllSessions()
+	if err != nil {
+		return 0, fmt.Errorf("get all sessions: %w", err)
+	}
+
+	for _, s := range sessions {
+		if ws, ok := s.(*wcaSession); ok {
+			if int(ws.pid) == pid {
+				return ws.GetVolume(), nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("no audio session found for pid %d", pid)
+}

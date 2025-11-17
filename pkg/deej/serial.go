@@ -109,6 +109,11 @@ func (sio *SerialIO) Start() error {
 	namedLogger.Infow("Connected", "conn", sio.conn)
 	sio.connected = true
 
+	// if we're set to send data on startup, do that now
+	if sio.deej.config.SendOnStartup {
+		sio.sendColors(namedLogger)
+	}
+
 	// read lines or await a stop
 	go func() {
 		connReader := bufio.NewReader(sio.conn)
@@ -146,6 +151,45 @@ func (sio *SerialIO) SubscribeToSliderMoveEvents() chan SliderMoveEvent {
 	return ch
 }
 
+// WriteLine sends a string over the serial connection.
+func (sio *SerialIO) WriteLine(line string) error {
+	if !sio.connected {
+		return errors.New("serial: not connected")
+	}
+
+	// Ensure the line ends with a newline character for the Arduino's parser
+	if !strings.HasSuffix(line, "\n") {
+		line += "\n"
+	}
+
+	_, err := sio.conn.Write([]byte(line))
+	if err != nil {
+		sio.logger.Warnw("Failed to write line to serial", "error", err, "line", line)
+		return fmt.Errorf("write to serial: %w", err)
+	}
+
+	if sio.deej.Verbose() {
+		sio.logger.Debugw("Wrote new line", "line", line)
+	}
+
+	return nil
+}
+
+func (sio *SerialIO) sendColors(logger *zap.SugaredLogger) {
+	logger.Debug("Sending color mapping to Arduino")
+	for sliderID, colors := range sio.deej.config.ColorMapping {
+
+		// strip '#' from hex codes
+		zeroColor := strings.TrimPrefix(colors.Zero, "#")
+		fullColor := strings.TrimPrefix(colors.Full, "#")
+
+		line := fmt.Sprintf("C:%d:%s:%s", sliderID, zeroColor, fullColor)
+		if err := sio.WriteLine(line); err != nil {
+			logger.Warnw("Failed to send color mapping for slider", "sliderID", sliderID, "error", err)
+		}
+	}
+}
+
 func (sio *SerialIO) setupOnConfigReload() {
 	configReloadedChannel := sio.deej.config.SubscribeToChanges()
 
@@ -180,6 +224,11 @@ func (sio *SerialIO) setupOnConfigReload() {
 						sio.logger.Warnw("Failed to renew connection after parameter change", "error", err)
 					} else {
 						sio.logger.Debug("Renewed connection successfully")
+					}
+				} else {
+					// if only non-connection params have changed, maybe send colors again
+					if sio.deej.config.SendOnStartup {
+						sio.sendColors(sio.logger)
 					}
 				}
 			}
