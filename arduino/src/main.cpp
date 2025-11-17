@@ -38,8 +38,8 @@ const int BACKLIGHT_FIRST_LED = 65;
 const int BACKLIGHT_LAST_LED = 96;
 const int BACKLIGHT_LED_COUNT = BACKLIGHT_LAST_LED - BACKLIGHT_FIRST_LED + 1;
 enum BackgroundMode { BG_OFF, BG_SOLID, BG_RGB };
-BackgroundMode backgroundMode = BG_SOLID;
-Color backgroundSolidColor = {0, 30, 0};
+BackgroundMode backgroundMode = BG_RGB;
+Color backgroundSolidColor = {0, 0, 0};
 int rainbowHue = 0;
 
 
