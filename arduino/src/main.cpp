@@ -5,10 +5,10 @@
 // --- System Configuration ---
 const unsigned long DEBOUNCE_DELAY = 50;
 const int MAX_ENCODER_VALUE = 100; // Increased for more granular control (0-100%)
-const int ENCODER_COUNTS_PER_STEP = 1;
+const float ENCODER_VOLUME_PER_COUNT = 1.0f; // Volume percent change per encoder count (adjust for sensitivity)
 
 // --- Serial Communication ---
-const long SERIAL_BAUD_RATE = 115200;
+const long SERIAL_BAUD_RATE = 9600;
 String serialBuffer = "";
 
 // --- LED Hardware & Color Definitions ---
@@ -32,14 +32,16 @@ const int ENCODER_LED_ORDER_E1[ENCODER_LED_COUNT] = {10, 8, 6, 4, 1, 2, 3, 5, 7,
 const int ENCODER_LED_ORDER_E2[ENCODER_LED_COUNT] = {1,2,3,4,7,8,5,6,9,10};
 const int ENCODER_LED_ORDER_E3[ENCODER_LED_COUNT] = {1,2,3,4,8,5,6,7,9,10};
 const int ENCODER_LED_ORDER_E4[ENCODER_LED_COUNT] = {1,2,3,4,5,6,7,8,9,10};
+const int ENCODER_LED_ORDER_E5[ENCODER_LED_COUNT] = {1,2,3,4,5,6,7,8,9,10};
+const int ENCODER_LED_ORDER_E6[ENCODER_LED_COUNT] = {1,2,3,4,5,6,7,8,9,10};
 
 // --- Background Lighting (Backlight section on LP50xx chain) ---
 const int BACKLIGHT_FIRST_LED = 65;
 const int BACKLIGHT_LAST_LED = 96;
 const int BACKLIGHT_LED_COUNT = BACKLIGHT_LAST_LED - BACKLIGHT_FIRST_LED + 1;
 enum BackgroundMode { BG_OFF, BG_SOLID, BG_RGB };
-BackgroundMode backgroundMode = BG_RGB;
-Color backgroundSolidColor = {0, 0, 0};
+BackgroundMode backgroundMode = BG_SOLID;
+Color backgroundSolidColor = {0, 50, 0};
 int rainbowHue = 0;
 
 
@@ -58,6 +60,7 @@ struct EncoderInfo {
   ESP32Encoder encoder;
   long lastDetentPosition;
   bool isPressed;
+  bool isMuted; // For toggle functionality
   uint8_t lastButtonState;
   unsigned long lastDebounceTime;
   Color zeroColor;
@@ -67,6 +70,7 @@ struct EncoderInfo {
     name(n), btn_pin(b), rotA_pin(ra), rotB_pin(rb), startLed(sLed), ledOrder(order), ledOrderLength(orderLen) {
       lastDetentPosition = 0;
       isPressed = false;
+      isMuted = false;
       lastButtonState = HIGH;
       lastDebounceTime = 0;
       zeroColor = {50, 0, 0}; // Default Red
@@ -92,7 +96,9 @@ EncoderInfo encoders[] = {
   EncoderInfo("E1", 25, 26, 27, 1,  ENCODER_LED_ORDER_E1, ENCODER_LED_COUNT),
   EncoderInfo("E2", 14, 12, 13, 11, ENCODER_LED_ORDER_E2, ENCODER_LED_COUNT),
   EncoderInfo("E3", 33, 32, 35, 21, ENCODER_LED_ORDER_E3, ENCODER_LED_COUNT),
-  EncoderInfo("E4", 19, 18, 5,  31, ENCODER_LED_ORDER_E4, ENCODER_LED_COUNT)
+  EncoderInfo("E4", 19, 18, 5,  31, ENCODER_LED_ORDER_E4, ENCODER_LED_COUNT),
+  EncoderInfo("E5", 16, 17, 22, 41, ENCODER_LED_ORDER_E5, ENCODER_LED_COUNT),
+  EncoderInfo("E6", 34, 36, 39, 51, ENCODER_LED_ORDER_E6, ENCODER_LED_COUNT)
 };
 const int numEncoders = sizeof(encoders) / sizeof(EncoderInfo);
 
@@ -110,6 +116,21 @@ void sendEncoderValues();
 void updateBackgroundLighting();
 Color hexToColor(String hex);
 Color Wheel(byte WheelPos);
+
+double encoderCountToVolume(long rawCount);
+long volumeToEncoderCount(double volume);
+
+double encoderCountToVolume(long rawCount) {
+  return (-rawCount) * ENCODER_VOLUME_PER_COUNT;
+}
+
+long volumeToEncoderCount(double volume) {
+  if (ENCODER_VOLUME_PER_COUNT <= 0.0f) {
+    return 0;
+  }
+  double counts = -volume / ENCODER_VOLUME_PER_COUNT;
+  return (long)round(counts);
+}
 
 
 // --- Main Setup ---
@@ -145,17 +166,21 @@ void loop() {
 
   // Check Rotary Encoders
   for (int i = 0; i < numEncoders; i++) {
+    if (ENCODER_VOLUME_PER_COUNT <= 0.0f) {
+      continue; // Prevent division by zero if misconfigured
+    }
+
     long rawCount = encoders[i].encoder.getCount();
-    long currentDetentPosition = (-rawCount) / ENCODER_COUNTS_PER_STEP;
+    double requestedVolume = encoderCountToVolume(rawCount);
+    double clampedVolume = constrain(requestedVolume, 0.0, (double)MAX_ENCODER_VALUE);
+
+    if (requestedVolume != clampedVolume) {
+      encoders[i].encoder.setCount(volumeToEncoderCount(clampedVolume));
+    }
+
+    long currentDetentPosition = (long)round(clampedVolume);
 
     if (currentDetentPosition != encoders[i].lastDetentPosition) {
-      if (currentDetentPosition > MAX_ENCODER_VALUE) {
-        currentDetentPosition = MAX_ENCODER_VALUE;
-        encoders[i].encoder.setCount(-MAX_ENCODER_VALUE * ENCODER_COUNTS_PER_STEP);
-      } else if (currentDetentPosition < 0) {
-        currentDetentPosition = 0;
-        encoders[i].encoder.setCount(0);
-      }
       encoders[i].lastDetentPosition = currentDetentPosition;
       updateEncoderLedDisplay(i);
     }
@@ -165,10 +190,12 @@ void loop() {
   for (int i = 0; i < numEncoders; i++) {
     int reading = digitalRead(encoders[i].btn_pin);
     if (reading != encoders[i].lastButtonState && millis() - encoders[i].lastDebounceTime > DEBOUNCE_DELAY) {
-      encoders[i].isPressed = (reading == LOW);
       encoders[i].lastDebounceTime = millis();
       encoders[i].lastButtonState = reading;
-      updateEncoderLedDisplay(i);
+      if (reading == LOW) { // Button pressed
+        encoders[i].isMuted = !encoders[i].isMuted;
+        updateEncoderLedDisplay(i);
+      }
     }
   }
 
@@ -194,7 +221,8 @@ void sendEncoderValues() {
   String builtString = "";
   for (int i = 0; i < numEncoders; i++) {
     // Map the 0-MAX_ENCODER_VALUE range to deej's 0-1023 range
-    int deejValue = map(encoders[i].lastDetentPosition, 0, MAX_ENCODER_VALUE, 0, 1023);
+    int valueToSend = encoders[i].isMuted ? 0 : encoders[i].lastDetentPosition;
+    int deejValue = map(valueToSend, 0, MAX_ENCODER_VALUE, 0, 1023);
     builtString += String(deejValue);
     if (i < numEncoders - 1) {
       builtString += "|";
@@ -219,8 +247,8 @@ void handleSerialCommands() {
             int encoderIndex = payload.substring(0, secondColonPos).toInt();
             float volume = payload.substring(secondColonPos + 1).toFloat();
             if (encoderIndex >= 0 && encoderIndex < numEncoders) {
-              encoders[encoderIndex].lastDetentPosition = (long)(volume * MAX_ENCODER_VALUE);
-              encoders[encoderIndex].encoder.setCount(-encoders[encoderIndex].lastDetentPosition * ENCODER_COUNTS_PER_STEP);
+              encoders[encoderIndex].lastDetentPosition = (long)round(volume * MAX_ENCODER_VALUE);
+              encoders[encoderIndex].encoder.setCount(volumeToEncoderCount(encoders[encoderIndex].lastDetentPosition));
               updateEncoderLedDisplay(encoderIndex);
             }
           }
@@ -257,12 +285,22 @@ void handleSerialCommands() {
 // --- LED Control Functions ---
 void updateEncoderLedDisplay(int encoderIndex) {
   EncoderInfo& enc = encoders[encoderIndex];
+
   float volumePercent = (float)enc.lastDetentPosition / MAX_ENCODER_VALUE;
   int ledsToLight = round(volumePercent * ENCODER_LED_COUNT);
 
   for (int i = 1; i <= ENCODER_LED_COUNT; i++) {
     int globalLedNum = enc.startLed + i - 1;
     setSingleLedColor(globalLedNum, {0,0,0});
+  }
+
+  if (enc.isMuted) {
+    for (int i = 0; i < ledsToLight; i++) {
+      int localLedIndex = enc.ledOrder ? enc.ledOrder[i] : (i + 1);
+      int globalLedNum = enc.startLed + localLedIndex - 1;
+      setSingleLedColor(globalLedNum, {50, 0, 0});
+    }
+    return;
   }
 
   for (int i = 0; i < ledsToLight; i++) {
@@ -274,7 +312,6 @@ void updateEncoderLedDisplay(int encoderIndex) {
     if (ledsToLight == 1) segmentPercent = 0; // Avoid division by zero if only one LED is on
     
     Color finalColor = lerp(enc.zeroColor, enc.fullColor, segmentPercent);
-    if (enc.isPressed) finalColor = {50, 0, 0}; // Override to red if pressed
 
     setSingleLedColor(globalLedNum, finalColor);
   }
