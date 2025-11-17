@@ -44,6 +44,9 @@ BackgroundMode backgroundMode = BG_SOLID;
 Color backgroundSolidColor = {0, 50, 0};
 int rainbowHue = 0;
 
+const Color BUTTON_ACTIVE_COLOR = {50, 50, 50};
+const Color BUTTON_INACTIVE_COLOR = {0, 0, 0};
+
 
 // --- LP50xx Register Definitions ---
 const byte DEVICE_CONFIG0  = 0x00;
@@ -107,6 +110,7 @@ ButtonInfo buttons[] = {
   ButtonInfo("Rur", 21, 63), ButtonInfo("Rul", 4, 64)
 };
 const int numButtons = sizeof(buttons) / sizeof(ButtonInfo);
+int selectedOutputIndex = -1;
 
 // --- Function Prototypes ---
 void setSingleLedColor(int ledNum, const Color& c);
@@ -119,6 +123,7 @@ Color Wheel(byte WheelPos);
 
 double encoderCountToVolume(long rawCount);
 long volumeToEncoderCount(double volume);
+void applyOutputSelection(int index, bool notifySerial);
 
 double encoderCountToVolume(long rawCount) {
   return (-rawCount) * ENCODER_VOLUME_PER_COUNT;
@@ -130,6 +135,25 @@ long volumeToEncoderCount(double volume) {
   }
   double counts = -volume / ENCODER_VOLUME_PER_COUNT;
   return (long)round(counts);
+}
+
+void applyOutputSelection(int index, bool notifySerial) {
+  if (index < 0 || index >= numButtons) {
+    return;
+  }
+
+  int previousIndex = selectedOutputIndex;
+  selectedOutputIndex = index;
+
+  for (int i = 0; i < numButtons; i++) {
+    bool isSelected = (i == selectedOutputIndex);
+    setSingleLedColor(buttons[i].ledNum, isSelected ? BUTTON_ACTIVE_COLOR : BUTTON_INACTIVE_COLOR);
+  }
+
+  if (notifySerial && previousIndex != selectedOutputIndex) {
+    Serial.print("O:");
+    Serial.println(selectedOutputIndex + 1);
+  }
 }
 
 
@@ -159,6 +183,8 @@ void setup() {
     updateEncoderLedDisplay(i);
   }
   for (int i = 0; i < numButtons; i++) { pinMode(buttons[i].pin, INPUT_PULLUP); }
+
+  applyOutputSelection(0, true);
 }
 
 // --- Main Loop ---
@@ -203,10 +229,11 @@ void loop() {
   for (int i = 0; i < numButtons; i++) {
     int reading = digitalRead(buttons[i].pin);
     if (reading != buttons[i].lastState && millis() - buttons[i].lastDebounceTime > DEBOUNCE_DELAY) {
-      bool isPressed = (reading == LOW);
-      setSingleLedColor(buttons[i].ledNum, isPressed ? Color{50,50,50} : Color{0,0,0});
       buttons[i].lastDebounceTime = millis();
       buttons[i].lastState = reading;
+      if (reading == LOW) {
+        applyOutputSelection(i, true);
+      }
     }
   }
   
@@ -272,6 +299,11 @@ void handleSerialCommands() {
             backgroundMode = BG_SOLID;
             Color c = hexToColor(payload);
             backgroundSolidColor = c;
+          }
+        } else if (commandID == 'O') { // Output device select: O:index(1-4)
+          int requestedIndex = payload.toInt() - 1;
+          if (requestedIndex >= 0 && requestedIndex < numButtons) {
+            applyOutputSelection(requestedIndex, false);
           }
         }
       }
