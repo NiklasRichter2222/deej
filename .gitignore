@@ -12,3 +12,8 @@ releases/
 *.bin
 logs/
 preferences.yaml
+arduino/lib/
+arduino/test/
+arduino/.pio/
+arduino/.vscode/
+arduino/include/
