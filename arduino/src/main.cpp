@@ -1,11 +1,11 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include <ESP32Encoder.h>
+#include <InterruptEncoder.h>
 
 // --- System Configuration ---
 const unsigned long DEBOUNCE_DELAY = 50;
 const int MAX_ENCODER_VALUE = 100; // Increased for more granular control (0-100%)
-const float ENCODER_VOLUME_PER_COUNT = 1.0f; // Volume percent change per encoder count (adjust for sensitivity)
+const float ENCODER_VOLUME_PER_COUNT = 2.0f; // Volume percent change per encoder count (adjust for sensitivity)
 
 // --- Serial Communication ---
 const long SERIAL_BAUD_RATE = 9600;
@@ -21,19 +21,18 @@ Color lerp(const Color& a, const Color& b, float t) {
   };
 }
 
-const int MUX_SELECT_PIN = 23;
 const int LEDS_PER_CHIP = 12;
 const byte LED_CHIP_ADDRESSES[] = {0x30, 0x31, 0x32, 0x33};
 const int NUM_CHIPS_PER_BANK = sizeof(LED_CHIP_ADDRESSES) / sizeof(LED_CHIP_ADDRESSES[0]);
 const int LEDS_PER_BANK = NUM_CHIPS_PER_BANK * LEDS_PER_CHIP;
 const int TOTAL_LEDS = 96;
 const int ENCODER_LED_COUNT = 10;
-const int ENCODER_LED_ORDER_E1[ENCODER_LED_COUNT] = {10, 8, 6, 4, 1, 2, 3, 5, 7, 9};
-const int ENCODER_LED_ORDER_E2[ENCODER_LED_COUNT] = {1,2,3,4,7,8,5,6,9,10};
+const int ENCODER_LED_ORDER_E1[ENCODER_LED_COUNT] = {10,8,6,4,1,2,3,5,7,9};
+const int ENCODER_LED_ORDER_E2[ENCODER_LED_COUNT] = {1,2,10,8,6,4,3,5,7,9};
 const int ENCODER_LED_ORDER_E3[ENCODER_LED_COUNT] = {1,2,3,4,8,5,6,7,9,10};
 const int ENCODER_LED_ORDER_E4[ENCODER_LED_COUNT] = {1,2,3,4,5,6,7,8,9,10};
-const int ENCODER_LED_ORDER_E5[ENCODER_LED_COUNT] = {1,2,3,4,5,6,7,8,9,10};
-const int ENCODER_LED_ORDER_E6[ENCODER_LED_COUNT] = {1,2,3,4,5,6,7,8,9,10};
+const int ENCODER_LED_ORDER_E5[ENCODER_LED_COUNT] = {2,4,6,7,8,5,3,1,9,10};
+const int ENCODER_LED_ORDER_E6[ENCODER_LED_COUNT] = {2,4,6,8,9,10,7,5,3,1};
 
 // --- Background Lighting (Backlight section on LP50xx chain) ---
 const int BACKLIGHT_FIRST_LED = 65;
@@ -60,7 +59,7 @@ struct EncoderInfo {
   int startLed;
   const int* ledOrder;
   uint8_t ledOrderLength;
-  ESP32Encoder encoder;
+  InterruptEncoder driver;
   long lastDetentPosition;
   bool isPressed;
   bool isMuted; // For toggle functionality
@@ -79,6 +78,19 @@ struct EncoderInfo {
       zeroColor = {50, 0, 0}; // Default Red
       fullColor = {0, 50, 0}; // Default Green
   }
+
+  void beginEncoder() {
+    driver.attach(rotA_pin, rotB_pin);
+    driver.count = 0;
+  }
+
+  long getRawCount() {
+    return driver.read();
+  }
+
+  void setRawCount(long value) {
+    driver.count = value / 2;
+  }
 };
 
 struct ButtonInfo {
@@ -95,20 +107,25 @@ struct ButtonInfo {
 };
 
 // --- Input Device Definitions ---
+const uint8_t SDA_PIN = 8;
+const uint8_t SCL_PIN = 9;
+const int MUX_SELECT_PIN = 42;
+
 EncoderInfo encoders[] = {
-  EncoderInfo("E1", 25, 26, 27, 1,  ENCODER_LED_ORDER_E1, ENCODER_LED_COUNT),
-  EncoderInfo("E2", 14, 12, 13, 11, ENCODER_LED_ORDER_E2, ENCODER_LED_COUNT),
-  EncoderInfo("E3", 33, 32, 35, 21, ENCODER_LED_ORDER_E3, ENCODER_LED_COUNT),
-  EncoderInfo("E4", 19, 18, 5,  31, ENCODER_LED_ORDER_E4, ENCODER_LED_COUNT),
-  EncoderInfo("E5", 16, 17, 22, 41, ENCODER_LED_ORDER_E5, ENCODER_LED_COUNT),
-  EncoderInfo("E6", 34, 36, 39, 51, ENCODER_LED_ORDER_E6, ENCODER_LED_COUNT)
+  EncoderInfo("E1", 4, 5, 6, 1,  ENCODER_LED_ORDER_E1, ENCODER_LED_COUNT),
+  EncoderInfo("E2", 7, 10, 11, 11, ENCODER_LED_ORDER_E2, ENCODER_LED_COUNT),
+  EncoderInfo("E3", 12, 13, 14, 21, ENCODER_LED_ORDER_E3, ENCODER_LED_COUNT),
+  EncoderInfo("E4", 15, 16, 17, 31, ENCODER_LED_ORDER_E4, ENCODER_LED_COUNT),
+  EncoderInfo("E5", 18, 1, 2, 41, ENCODER_LED_ORDER_E5, ENCODER_LED_COUNT),
+  EncoderInfo("E6", 21, 35, 36, 51, ENCODER_LED_ORDER_E6, ENCODER_LED_COUNT)
 };
-const int numEncoders = sizeof(encoders) / sizeof(EncoderInfo);
 
 ButtonInfo buttons[] = {
-  ButtonInfo("Ror", 15, 61), ButtonInfo("Rol", 2, 62),
-  ButtonInfo("Rur", 21, 63), ButtonInfo("Rul", 4, 64)
+  ButtonInfo("Ror", 38, 61), ButtonInfo("Rol", 37, 62),
+  ButtonInfo("Rur", 40, 63), ButtonInfo("Rul", 41, 64)
 };
+
+const int numEncoders = sizeof(encoders) / sizeof(EncoderInfo);
 const int numButtons = sizeof(buttons) / sizeof(ButtonInfo);
 int selectedOutputIndex = -1;
 
@@ -126,7 +143,8 @@ long volumeToEncoderCount(double volume);
 void applyOutputSelection(int index, bool notifySerial);
 
 double encoderCountToVolume(long rawCount) {
-  return (-rawCount) * ENCODER_VOLUME_PER_COUNT;
+  double volume = (-rawCount)/2 * ENCODER_VOLUME_PER_COUNT;
+  return volume;
 }
 
 long volumeToEncoderCount(double volume) {
@@ -163,7 +181,7 @@ void setup() {
   // Quick boot marker to verify serial baud and monitor readability
   delay(50);
   Serial.println("=== deej boot (Serial "+ String(SERIAL_BAUD_RATE) + ") ===");
-  Wire.begin();
+  Wire.begin(SDA_PIN, SCL_PIN);
 
   pinMode(MUX_SELECT_PIN, OUTPUT);
   for (int bank = 0; bank < 2; bank++) {
@@ -177,8 +195,8 @@ void setup() {
   for(int i = 1; i <= TOTAL_LEDS; i++) { setSingleLedColor(i, {0,0,0}); }
 
   for (int i = 0; i < numEncoders; i++) {
-    encoders[i].encoder.attachFullQuad(encoders[i].rotA_pin, encoders[i].rotB_pin);
-    encoders[i].encoder.clearCount();
+    encoders[i].beginEncoder();
+    encoders[i].setRawCount(0);
     pinMode(encoders[i].btn_pin, INPUT_PULLUP);
     updateEncoderLedDisplay(i);
   }
@@ -196,12 +214,12 @@ void loop() {
       continue; // Prevent division by zero if misconfigured
     }
 
-    long rawCount = encoders[i].encoder.getCount();
+    long rawCount = encoders[i].getRawCount();
     double requestedVolume = encoderCountToVolume(rawCount);
     double clampedVolume = constrain(requestedVolume, 0.0, (double)MAX_ENCODER_VALUE);
 
     if (requestedVolume != clampedVolume) {
-      encoders[i].encoder.setCount(volumeToEncoderCount(clampedVolume));
+      encoders[i].setRawCount(volumeToEncoderCount(clampedVolume));
     }
 
     long currentDetentPosition = (long)round(clampedVolume);
@@ -275,7 +293,7 @@ void handleSerialCommands() {
             float volume = payload.substring(secondColonPos + 1).toFloat();
             if (encoderIndex >= 0 && encoderIndex < numEncoders) {
               encoders[encoderIndex].lastDetentPosition = (long)round(volume * MAX_ENCODER_VALUE);
-              encoders[encoderIndex].encoder.setCount(volumeToEncoderCount(encoders[encoderIndex].lastDetentPosition));
+              encoders[encoderIndex].setRawCount(volumeToEncoderCount(encoders[encoderIndex].lastDetentPosition));
               updateEncoderLedDisplay(encoderIndex);
             }
           }
