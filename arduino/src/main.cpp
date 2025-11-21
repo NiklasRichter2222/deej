@@ -1,11 +1,12 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <InterruptEncoder.h>
+#include <ESP32Encoder.h>
 
 // --- System Configuration ---
 const unsigned long DEBOUNCE_DELAY = 50;
 const int MAX_ENCODER_VALUE = 100; // Increased for more granular control (0-100%)
-const float ENCODER_VOLUME_PER_COUNT = 0.5f; // Volume percent change per encoder detent (adjust for sensitivity)
+const float ENCODER_VOLUME_PER_COUNT = 2.0f; // Volume percent change per encoder detent (adjust for sensitivity)
 // --- Serial Communication ---
 const long SERIAL_BAUD_RATE = 9600;
 String serialBuffer = "";
@@ -58,7 +59,9 @@ struct EncoderInfo {
   int startLed;
   const int* ledOrder;
   uint8_t ledOrderLength;
+  bool useHardwareAccel;
   InterruptEncoder driver;
+  ESP32Encoder hardwareDriver;
   long lastDetentPosition;
   bool isPressed;
   bool isMuted; // For toggle functionality
@@ -67,8 +70,8 @@ struct EncoderInfo {
   Color zeroColor;
   Color fullColor;
 
-  EncoderInfo(const char* n, uint8_t b, uint8_t ra, uint8_t rb, int sLed, const int* order, uint8_t orderLen) :
-    name(n), btn_pin(b), rotA_pin(ra), rotB_pin(rb), startLed(sLed), ledOrder(order), ledOrderLength(orderLen) {
+  EncoderInfo(const char* n, uint8_t b, uint8_t ra, uint8_t rb, int sLed, const int* order, uint8_t orderLen, bool hwAccel = false) :
+    name(n), btn_pin(b), rotA_pin(ra), rotB_pin(rb), startLed(sLed), ledOrder(order), ledOrderLength(orderLen), useHardwareAccel(hwAccel) {
       lastDetentPosition = 0;
       isPressed = false;
       isMuted = false;
@@ -79,27 +82,43 @@ struct EncoderInfo {
   }
 
   void beginEncoder() {
-    driver.attach(rotA_pin, rotB_pin);
-    driver.count = 0;
+    if (useHardwareAccel) {
+      hardwareDriver.attachHalfQuad(rotA_pin, rotB_pin);
+      hardwareDriver.clearCount();
+      hardwareDriver.setCount(0);
+    } else {
+      driver.attach(rotA_pin, rotB_pin);
+      driver.count = 0;
+    }
   }
 
   long getRawCount() {
+    if (useHardwareAccel) {
+      return (long)(hardwareDriver.getCount() / 2);
+    }
     return driver.read() / 2; // InterruptEncoder::read() reports twice the actual detent count
   }
 
   void setRawCount(long value) {
-    driver.count = value;
+    if (useHardwareAccel) {
+      hardwareDriver.setCount((int64_t)value * 2);
+    } else {
+      driver.count = value;
+    }
   }
 };
+
+enum ButtonGroup : uint8_t { BUTTON_GROUP_LOWER = 0, BUTTON_GROUP_UPPER = 1 };
 
 struct ButtonInfo {
   const char* name;
   uint8_t pin;
   int ledNum;
+  ButtonGroup group;
   uint8_t lastState;
   unsigned long lastDebounceTime;
 
-  ButtonInfo(const char* n, uint8_t p, int ln) : name(n), pin(p), ledNum(ln) {
+  ButtonInfo(const char* n, uint8_t p, int ln, ButtonGroup g) : name(n), pin(p), ledNum(ln), group(g) {
     lastState = HIGH;
     lastDebounceTime = 0;
   }
@@ -111,8 +130,8 @@ const uint8_t SCL_PIN = 9;
 const int MUX_SELECT_PIN = 42;
 
 EncoderInfo encoders[] = {
-  EncoderInfo("E1", 4, 5, 6, 1,  ENCODER_LED_ORDER_E1, ENCODER_LED_COUNT),
-  EncoderInfo("E2", 7, 10, 11, 11, ENCODER_LED_ORDER_E2, ENCODER_LED_COUNT),
+  EncoderInfo("E1", 4, 5, 6, 1,  ENCODER_LED_ORDER_E1, ENCODER_LED_COUNT, true),
+  EncoderInfo("E2", 7, 10, 11, 11, ENCODER_LED_ORDER_E2, ENCODER_LED_COUNT, true),
   EncoderInfo("E3", 12, 13, 14, 21, ENCODER_LED_ORDER_E3, ENCODER_LED_COUNT),
   EncoderInfo("E4", 15, 16, 17, 31, ENCODER_LED_ORDER_E4, ENCODER_LED_COUNT),
   EncoderInfo("E5", 18, 1, 2, 41, ENCODER_LED_ORDER_E5, ENCODER_LED_COUNT),
@@ -120,13 +139,14 @@ EncoderInfo encoders[] = {
 };
 
 ButtonInfo buttons[] = {
-  ButtonInfo("Ror", 38, 61), ButtonInfo("Rol", 37, 62),
-  ButtonInfo("Rur", 40, 63), ButtonInfo("Rul", 41, 64)
+  ButtonInfo("Ror", 38, 61, BUTTON_GROUP_LOWER), ButtonInfo("Rol", 37, 62, BUTTON_GROUP_LOWER),
+  ButtonInfo("Rur", 40, 63, BUTTON_GROUP_UPPER), ButtonInfo("Rul", 41, 64, BUTTON_GROUP_UPPER)
 };
 
 const int numEncoders = sizeof(encoders) / sizeof(EncoderInfo);
 const int numButtons = sizeof(buttons) / sizeof(ButtonInfo);
-int selectedOutputIndex = -1;
+const int NUM_BUTTON_GROUPS = 2;
+int selectedOutputIndexByGroup[NUM_BUTTON_GROUPS] = {-1, -1};
 
 // --- Function Prototypes ---
 void setSingleLedColor(int ledNum, const Color& c);
@@ -159,17 +179,26 @@ void applyOutputSelection(int index, bool notifySerial) {
     return;
   }
 
-  int previousIndex = selectedOutputIndex;
-  selectedOutputIndex = index;
+  ButtonGroup group = buttons[index].group;
+  uint8_t groupIndex = static_cast<uint8_t>(group);
+  if (groupIndex >= NUM_BUTTON_GROUPS) {
+    return;
+  }
+
+  int previousIndex = selectedOutputIndexByGroup[groupIndex];
+  selectedOutputIndexByGroup[groupIndex] = index;
 
   for (int i = 0; i < numButtons; i++) {
-    bool isSelected = (i == selectedOutputIndex);
+    if (buttons[i].group != group) {
+      continue;
+    }
+    bool isSelected = (i == selectedOutputIndexByGroup[groupIndex]);
     setSingleLedColor(buttons[i].ledNum, isSelected ? BUTTON_ACTIVE_COLOR : BUTTON_INACTIVE_COLOR);
   }
 
-  if (notifySerial && previousIndex != selectedOutputIndex) {
+  if (notifySerial && previousIndex != selectedOutputIndexByGroup[groupIndex]) {
     Serial.print("O:");
-    Serial.println(selectedOutputIndex + 1);
+    Serial.println(index + 1);
   }
 }
 
@@ -181,6 +210,8 @@ void setup() {
   delay(50);
   Serial.println("=== deej boot (Serial "+ String(SERIAL_BAUD_RATE) + ") ===");
   Wire.begin(SDA_PIN, SCL_PIN);
+
+  ESP32Encoder::useInternalWeakPullResistors = puType::up;
 
   pinMode(MUX_SELECT_PIN, OUTPUT);
   for (int bank = 0; bank < 2; bank++) {
@@ -202,6 +233,7 @@ void setup() {
   for (int i = 0; i < numButtons; i++) { pinMode(buttons[i].pin, INPUT_PULLUP); }
 
   applyOutputSelection(0, true);
+  applyOutputSelection(2, true);
 }
 
 // --- Main Loop ---
@@ -283,13 +315,18 @@ void handleSerialCommands() {
       int colonPos = serialBuffer.indexOf(':');
       if (colonPos > 0) {
         char commandID = serialBuffer.charAt(0);
-        String payload = serialBuffer.substring(colonPos + 1);
+  String payload = serialBuffer.substring(colonPos + 1);
+  payload.trim();
         
         if (commandID == 'V') { // Volume update: V:encoderIndex:volume(0.0-1.0)
           int secondColonPos = payload.indexOf(':');
           if (secondColonPos > 0) {
-            int encoderIndex = payload.substring(0, secondColonPos).toInt();
-            float volume = payload.substring(secondColonPos + 1).toFloat();
+            String indexPart = payload.substring(0, secondColonPos);
+            String volumePart = payload.substring(secondColonPos + 1);
+            indexPart.trim();
+            volumePart.trim();
+            int encoderIndex = indexPart.toInt();
+            float volume = volumePart.toFloat();
             if (encoderIndex >= 0 && encoderIndex < numEncoders) {
               encoders[encoderIndex].lastDetentPosition = (long)round(volume * MAX_ENCODER_VALUE);
               encoders[encoderIndex].setRawCount(volumeToEncoderCount(encoders[encoderIndex].lastDetentPosition));
@@ -300,9 +337,13 @@ void handleSerialCommands() {
           int secondColonPos = payload.indexOf(':');
           int thirdColonPos = payload.lastIndexOf(':');
           if (secondColonPos > 0 && thirdColonPos > secondColonPos) {
-            int encoderIndex = payload.substring(0, secondColonPos).toInt();
+            String encoderPart = payload.substring(0, secondColonPos);
+            encoderPart.trim();
+            int encoderIndex = encoderPart.toInt();
             String zeroHex = payload.substring(secondColonPos + 1, thirdColonPos);
             String fullHex = payload.substring(thirdColonPos + 1);
+            zeroHex.trim();
+            fullHex.trim();
             if (encoderIndex >= 0 && encoderIndex < numEncoders) {
               encoders[encoderIndex].zeroColor = hexToColor(zeroHex);
               encoders[encoderIndex].fullColor = hexToColor(fullHex);
@@ -310,12 +351,16 @@ void handleSerialCommands() {
             }
           }
         } else if (commandID == 'B') { // Background lighting: B:rgb or B:hexcolor
-          if (payload.equalsIgnoreCase("rgb")) {
-            backgroundMode = BG_RGB;
-          } else {
-            backgroundMode = BG_SOLID;
-            Color c = hexToColor(payload);
-            backgroundSolidColor = c;
+          if (payload.length() > 0) {
+            if (payload.equalsIgnoreCase("rgb")) {
+              backgroundMode = BG_RGB;
+            } else if (payload.equalsIgnoreCase("off")) {
+              backgroundMode = BG_OFF;
+            } else {
+              backgroundMode = BG_SOLID;
+              Color c = hexToColor(payload);
+              backgroundSolidColor = c;
+            }
           }
         } else if (commandID == 'O') { // Output device select: O:index(1-4)
           int requestedIndex = payload.toInt() - 1;
@@ -326,7 +371,9 @@ void handleSerialCommands() {
       }
       serialBuffer = "";
     } else {
-      serialBuffer += c;
+      if (c != '\r') {
+        serialBuffer += c;
+      }
     }
   }
 }
@@ -413,7 +460,24 @@ void updateBackgroundLighting() {
 
 // --- Utility Functions ---
 Color hexToColor(String hex) {
-  hex.remove(0, hex.startsWith("#") ? 1 : 0);
+  hex.trim();
+  if (hex.startsWith("0x") || hex.startsWith("0X")) {
+    hex.remove(0, 2);
+  }
+  if (hex.startsWith("#")) {
+    hex.remove(0, 1);
+  }
+  if (hex.length() == 3) {
+    String expanded = "";
+    for (int i = 0; i < 3; i++) {
+      expanded += hex.charAt(i);
+      expanded += hex.charAt(i);
+    }
+    hex = expanded;
+  }
+  if (hex.length() != 6) {
+    return {0, 0, 0};
+  }
   long number = strtol(hex.c_str(), NULL, 16);
   byte r = (number >> 16) & 0xFF;
   byte g = (number >> 8) & 0xFF;

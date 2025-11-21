@@ -38,6 +38,11 @@ type SerialIO struct {
 
 	lastSentSliderPositions   map[int]float32
 	lastSentSliderPositionsMu sync.Mutex
+
+	// suppress incoming slider move events until this time. used to avoid
+	// echo/feedback loops when we send initial display values to the controller
+	suppressSliderEventsUntil   time.Time
+	suppressSliderEventsUntilMu sync.Mutex
 }
 
 // SliderMoveEvent represents a single slider move captured by deej
@@ -333,6 +338,18 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 
 	// deliver move events if there are any, towards all potential consumers
 	if len(moveEvents) > 0 {
+		// check if we're currently suppressing incoming slider events (e.g. during startup sync)
+		sio.suppressSliderEventsUntilMu.Lock()
+		suppressUntil := sio.suppressSliderEventsUntil
+		sio.suppressSliderEventsUntilMu.Unlock()
+
+		if time.Now().Before(suppressUntil) {
+			if sio.deej.Verbose() {
+				logger.Debugw("Ignoring incoming slider events due to startup sync", "count", len(moveEvents))
+			}
+			return
+		}
+
 		for _, consumer := range sio.sliderMoveConsumers {
 			for _, moveEvent := range moveEvents {
 				consumer <- moveEvent
@@ -434,6 +451,14 @@ func (sio *SerialIO) sendInitialSliderVolumes(logger *zap.SugaredLogger) error {
 	}
 
 	sort.Ints(indices)
+
+	// suppress incoming slider move events for a short window so the controller's
+	// initial echo doesn't cause deej to accidentally apply the same values to
+	// system/app volumes.
+	const startupSuppress = 700 * time.Millisecond
+	sio.suppressSliderEventsUntilMu.Lock()
+	sio.suppressSliderEventsUntil = time.Now().Add(startupSuppress)
+	sio.suppressSliderEventsUntilMu.Unlock()
 
 	for _, idx := range indices {
 		volume, ok := sio.deej.sessions.sliderVolume(idx)

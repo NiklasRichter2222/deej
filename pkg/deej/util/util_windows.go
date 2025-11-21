@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	getCurrentWindowInternalCooldown = time.Millisecond * 350
+	getCurrentWindowInternalCooldown = time.Millisecond * 150
 )
 
 var (

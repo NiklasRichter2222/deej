@@ -49,6 +49,12 @@ const (
 	// key "process_refresh_frequency", but exposing this type of implementation detail seems wrong now
 	minTimeBetweenSessionRefreshes = time.Second * 5
 
+	// smallest interval between forced refreshes when the current window target is in play
+	currentTargetForceRefreshCooldown = time.Millisecond * 500
+
+	// smallest interval between forced refreshes for fixed (non-current) targets
+	missingTargetForceRefreshCooldown = time.Millisecond * 900
+
 	// determines whether the map should be refreshed when a slider moves.
 	// this is a bit greedy but allows us to ensure sessions are always re-acquired, which is
 	// especially important for process groups (because you can have one ongoing session
@@ -236,9 +242,14 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 
 	targetFound := false
 	adjustmentFailed := false
+	containsCurrentTarget := false
 
 	// for each possible target for this slider...
 	for _, target := range targets {
+		trimmedTarget := strings.ToLower(strings.TrimSpace(target))
+		if trimmedTarget == specialTargetTransformPrefix+specialTargetCurrentWindow {
+			containsCurrentTarget = true
+		}
 
 		// resolve the target name by cleaning it up and applying any special transformations.
 		// depending on the transformation applied, this can result in more than one target name
@@ -273,7 +284,14 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 	// processes could've opened since the last time this slider moved.
 	// if they haven't, the cooldown will take care to not spam it up
 	if !targetFound {
-		m.refreshSessions(false)
+		elapsed := time.Since(m.lastSessionRefresh)
+		if containsCurrentTarget && elapsed > currentTargetForceRefreshCooldown {
+			m.refreshSessions(true)
+		} else if elapsed > missingTargetForceRefreshCooldown {
+			m.refreshSessions(true)
+		} else {
+			m.refreshSessions(false)
+		}
 	} else if adjustmentFailed {
 
 		// performance: the reason that forcing a refresh here is okay is that we'll only get here

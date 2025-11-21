@@ -24,7 +24,7 @@ func (d *Deej) RunConfiguredCommand(index int) {
 	if spec.Shell {
 		commandLine := strings.Join(args, " ")
 		if util.Windows() {
-			args = []string{"cmd.exe", "/C", commandLine}
+			args = []string{"powershell.exe", "-NoLogo", "-NoProfile", "-Command", commandLine}
 		} else {
 			args = []string{"/bin/bash", "-c", commandLine}
 		}

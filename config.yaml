@@ -63,7 +63,7 @@ color_mapping:
 background_lighting: "rgb"
 
 commands: 
-  1: "start notepad.exe"   
-  2: "echo Slider 2 turned"
-  3: "echo Slider 3 turned"
-  4: "echo Slider 4 turned"
+  1: "Set-AudioDevice -ID '{0.0.0.00000000}.{ec3dec42-b8f4-473c-978c-36386dcb25c9}'"   
+  2: "Set-AudioDevice -ID '{0.0.0.00000000}.{7daaefee-97e9-4bd8-95d1-136f2cbb406f}'"
+  3: "Set-AudioDevice -ID '{0.0.1.00000000}.{df7d5313-7314-4373-abef-45901ff26b62}'"
+  4: "Set-AudioDevice -ID '{0.0.1.00000000}.{eaead663-2795-4916-b530-3d2af318fbf7}'"
