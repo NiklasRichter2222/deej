@@ -5,8 +5,7 @@
 // --- System Configuration ---
 const unsigned long DEBOUNCE_DELAY = 50;
 const int MAX_ENCODER_VALUE = 100; // Increased for more granular control (0-100%)
-const float ENCODER_VOLUME_PER_COUNT = 2.0f; // Volume percent change per encoder count (adjust for sensitivity)
-
+const float ENCODER_VOLUME_PER_COUNT = 0.5f; // Volume percent change per encoder detent (adjust for sensitivity)
 // --- Serial Communication ---
 const long SERIAL_BAUD_RATE = 9600;
 String serialBuffer = "";
@@ -85,11 +84,11 @@ struct EncoderInfo {
   }
 
   long getRawCount() {
-    return driver.read();
+    return driver.read() / 2; // InterruptEncoder::read() reports twice the actual detent count
   }
 
   void setRawCount(long value) {
-    driver.count = value / 2;
+    driver.count = value;
   }
 };
 
@@ -143,7 +142,7 @@ long volumeToEncoderCount(double volume);
 void applyOutputSelection(int index, bool notifySerial);
 
 double encoderCountToVolume(long rawCount) {
-  double volume = (-rawCount)/2 * ENCODER_VOLUME_PER_COUNT;
+  double volume = (-rawCount) * ENCODER_VOLUME_PER_COUNT;
   return volume;
 }
 

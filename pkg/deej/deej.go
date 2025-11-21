@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -80,10 +79,6 @@ func NewDeej(logger *zap.SugaredLogger, verbose bool) (*Deej, error) {
 
 	logger.Debug("Created deej instance")
 
-	// set up a ticker to watch for foreground window changes,
-	// so that we can notify the arduino about volume changes for the "current" app
-	d.setupForegroundWatcher()
-
 	return d, nil
 }
 
@@ -128,36 +123,6 @@ func (d *Deej) SetVersion(version string) {
 // Verbose returns a boolean indicating whether deej is running in verbose mode
 func (d *Deej) Verbose() bool {
 	return d.verbose
-}
-
-func (d *Deej) setupForegroundWatcher() {
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-
-		var lastForegroundProcessName string
-
-		for {
-			select {
-			case <-ticker.C:
-				if d.config.SyncVolumes {
-					currentProcessName, err := d.sessions.sessionFinder.GetForegroundProcessName()
-					if err != nil {
-						d.logger.Warnw("Failed to get foreground process name for watcher", "error", err)
-						continue
-					}
-
-					if currentProcessName != "" && currentProcessName != lastForegroundProcessName {
-						d.logger.Debugw("Foreground process changed", "from", lastForegroundProcessName, "to", currentProcessName)
-						d.sessions.handleCurrentAppVolume()
-						lastForegroundProcessName = currentProcessName
-					}
-				}
-			case <-d.stopChannel:
-				return
-			}
-		}
-	}()
 }
 
 func (d *Deej) setupInterruptHandler() {

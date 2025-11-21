@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -109,10 +110,8 @@ func (sio *SerialIO) Start() error {
 	namedLogger.Infow("Connected", "conn", sio.conn)
 	sio.connected = true
 
-	// if we're set to send data on startup, do that now
-	if sio.deej.config.SendOnStartup {
-		sio.sendColors(namedLogger)
-		sio.sendBackgroundLighting(namedLogger)
+	if err := sio.sendLightingConfiguration(namedLogger); err != nil {
+		namedLogger.Warnw("Failed to send lighting configuration", "error", err)
 	}
 
 	// read lines or await a stop
@@ -152,58 +151,6 @@ func (sio *SerialIO) SubscribeToSliderMoveEvents() chan SliderMoveEvent {
 	return ch
 }
 
-// WriteLine sends a string over the serial connection.
-func (sio *SerialIO) WriteLine(line string) error {
-	if !sio.connected {
-		return errors.New("serial: not connected")
-	}
-
-	// Ensure the line ends with a newline character for the Arduino's parser
-	if !strings.HasSuffix(line, "\n") {
-		line += "\n"
-	}
-
-	_, err := sio.conn.Write([]byte(line))
-	if err != nil {
-		sio.logger.Warnw("Failed to write line to serial", "error", err, "line", line)
-		return fmt.Errorf("write to serial: %w", err)
-	}
-
-	if sio.deej.Verbose() {
-		sio.logger.Debugw("Wrote new line", "line", line)
-	}
-
-	return nil
-}
-
-func (sio *SerialIO) sendColors(logger *zap.SugaredLogger) {
-	logger.Debug("Sending color mapping to Arduino")
-	for sliderID, colors := range sio.deej.config.ColorMapping {
-
-		// strip '#' from hex codes
-		zeroColor := strings.TrimPrefix(colors.Zero, "#")
-		fullColor := strings.TrimPrefix(colors.Full, "#")
-
-		line := fmt.Sprintf("C:%d:%s:%s", sliderID, zeroColor, fullColor)
-		if err := sio.WriteLine(line); err != nil {
-			logger.Warnw("Failed to send color mapping for slider", "sliderID", sliderID, "error", err)
-		}
-	}
-}
-
-func (sio *SerialIO) sendBackgroundLighting(logger *zap.SugaredLogger) {
-	logger.Debug("Sending background lighting setting to Arduino")
-	bgSetting := sio.deej.config.BackgroundLighting
-
-	// strip '#' from hex code if it exists
-	bgSetting = strings.TrimPrefix(bgSetting, "#")
-
-	line := fmt.Sprintf("B:%s", bgSetting)
-	if err := sio.WriteLine(line); err != nil {
-		logger.Warnw("Failed to send background lighting setting", "error", err)
-	}
-}
-
 func (sio *SerialIO) setupOnConfigReload() {
 	configReloadedChannel := sio.deej.config.SubscribeToChanges()
 
@@ -239,12 +186,17 @@ func (sio *SerialIO) setupOnConfigReload() {
 					} else {
 						sio.logger.Debug("Renewed connection successfully")
 					}
-				} else {
-					// if only non-connection params have changed, maybe send colors again
-					if sio.deej.config.SendOnStartup {
-						sio.sendColors(sio.logger)
-						sio.sendBackgroundLighting(sio.logger)
-					}
+				} else if sio.connected {
+					go func() {
+						<-time.After(stopDelay)
+						if !sio.connected {
+							return
+						}
+
+						if err := sio.sendLightingConfiguration(sio.logger); err != nil {
+							sio.logger.Warnw("Failed to send lighting configuration after reload", "error", err)
+						}
+					}()
 				}
 			}
 		}
@@ -368,4 +320,63 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 			}
 		}
 	}
+}
+
+func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error {
+	if !sio.deej.config.SendOnStartup {
+		return nil
+	}
+
+	if sio.conn == nil || !sio.connected {
+		return errors.New("serial: connection not established")
+	}
+
+	background := strings.TrimSpace(sio.deej.config.BackgroundLighting)
+	if background != "" {
+		if err := sio.writeSerialLine(fmt.Sprintf("B:%s", background)); err != nil {
+			return fmt.Errorf("send background lighting: %w", err)
+		}
+
+		if sio.deej.Verbose() {
+			logger.Debugw("Sent background lighting", "value", background)
+		}
+	}
+
+	if len(sio.deej.config.ColorMapping) == 0 {
+		return nil
+	}
+
+	indices := make([]int, 0, len(sio.deej.config.ColorMapping))
+	for idx := range sio.deej.config.ColorMapping {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+
+	for _, idx := range indices {
+		entry := sio.deej.config.ColorMapping[idx]
+		zero := strings.TrimSpace(entry.Zero)
+		full := strings.TrimSpace(entry.Full)
+		if zero == "" || full == "" {
+			continue
+		}
+
+		if err := sio.writeSerialLine(fmt.Sprintf("C:%d:%s:%s", idx, zero, full)); err != nil {
+			return fmt.Errorf("send color mapping for slider %d: %w", idx, err)
+		}
+
+		if sio.deej.Verbose() {
+			logger.Debugw("Sent color mapping", "slider", idx, "zero", zero, "full", full)
+		}
+	}
+
+	return nil
+}
+
+func (sio *SerialIO) writeSerialLine(payload string) error {
+	if !strings.HasSuffix(payload, "\r\n") {
+		payload += "\r\n"
+	}
+
+	_, err := sio.conn.Write([]byte(payload))
+	return err
 }

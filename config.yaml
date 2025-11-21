@@ -15,29 +15,30 @@ slider_mapping:
     - rocketleague.exe
   4: discord.exe
 
-# set this to true if you want the controls inverted (i.e. top is 0%, bottom is 100%)
+# Set to true if your encoders feel backwards
 invert_sliders: false
 
-# settings for connecting to the arduino board
-com_port: COM4
+# Connection settings for the ESP32-S3
+com_port: COM13
 baud_rate: 9600
 
-# adjust the amount of signal noise reduction depending on your hardware quality
-# supported values are "low" (excellent hardware), "default" (regular hardware) or "high" (bad, noisy hardware)
+# Noise reduction for encoders (can be 'low', 'default', or 'high')
 noise_reduction: default
 
-# settings for sending data to the arduino board
-# send current volumes to the arduino on deej boot
+# --- Bidirectional Sync Settings ---
+# Send current PC volumes and colors to the controller on startup
 send_on_startup: true
-# continously update the arduino if a volume changes
+# Continuously send volume changes from the PC to the controller
 sync_volumes: true
 
-# color mapping for each slider, from 0% to 100% volume
-# colors are sent as hex values (e.g. #ff0000)
+# --- Controller-Specific Settings ---
+
+# Color mapping for each encoder's LED ring, from 0% to 100% volume.
+# Colors are sent as hex values.
 color_mapping:
   0:
-    zero: '#ff0000'
-    full: '#00ff00'
+    zero: '#ff0000' # Red
+    full: '#00ffff' # Green
   1:
     zero: '#ff0000'
     full: '#00ff00'
@@ -50,3 +51,10 @@ color_mapping:
   4:
     zero: '#ff0000'
     full: '#00ff00'
+  5:
+    zero: '#ff0000'
+    full: '#00ff00'
+
+# Controls the ambient background lighting on the controller.
+# Can be a single hex color (e.g., '#0000ff') or "rgb" for a rainbow effect.
+background_lighting: "rgb"

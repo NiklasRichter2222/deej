@@ -3,8 +3,8 @@ package deej
 import (
 	"fmt"
 	"path"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -16,6 +16,11 @@ import (
 
 // CanonicalConfig provides application-wide access to configuration fields,
 // as well as loading/file watching logic for deej's configuration file
+type SliderColorConfig struct {
+	Zero string `mapstructure:"zero"`
+	Full string `mapstructure:"full"`
+}
+
 type CanonicalConfig struct {
 	SliderMapping *sliderMap
 
@@ -24,12 +29,14 @@ type CanonicalConfig struct {
 		BaudRate int
 	}
 
-	InvertSliders       bool
-	SendOnStartup       bool
-	SyncVolumes         bool
-	ColorMapping        map[int]struct{ Zero, Full string }
+	InvertSliders bool
+
 	NoiseReductionLevel string
-	BackgroundLighting  string
+
+	SendOnStartup      bool
+	SyncVolumes        bool
+	ColorMapping       map[int]SliderColorConfig
+	BackgroundLighting string
 
 	logger             *zap.SugaredLogger
 	notifier           Notifier
@@ -100,7 +107,7 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	userConfig.SetDefault(configKeySendOnStartup, false)
 	userConfig.SetDefault(configKeySyncVolumes, false)
 	userConfig.SetDefault(configKeyColorMapping, map[string]map[string]string{})
-	userConfig.SetDefault(configKeyBackgroundLighting, "rgb")
+	userConfig.SetDefault(configKeyBackgroundLighting, "")
 
 	internalConfig := viper.New()
 	internalConfig.SetConfigName(internalConfigName)
@@ -158,10 +165,7 @@ func (cc *CanonicalConfig) Load() error {
 	cc.logger.Infow("Config values",
 		"sliderMapping", cc.SliderMapping,
 		"connectionInfo", cc.ConnectionInfo,
-		"invertSliders", cc.InvertSliders,
-		"sendOnStartup", cc.SendOnStartup,
-		"syncVolumes", cc.SyncVolumes,
-		"backgroundLighting", cc.BackgroundLighting)
+		"invertSliders", cc.InvertSliders)
 
 	return nil
 }
@@ -255,27 +259,8 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 	cc.NoiseReductionLevel = cc.userConfig.GetString(configKeyNoiseReductionLevel)
 	cc.SendOnStartup = cc.userConfig.GetBool(configKeySendOnStartup)
 	cc.SyncVolumes = cc.userConfig.GetBool(configKeySyncVolumes)
-	cc.BackgroundLighting = cc.userConfig.GetString(configKeyBackgroundLighting)
-
-	// parse color mapping
-	var rawColorMapping map[string]map[string]string
-	if err := cc.userConfig.UnmarshalKey(configKeyColorMapping, &rawColorMapping); err != nil {
-		cc.logger.Warnw("Failed to parse color mapping from config", "error", err)
-	} else {
-		cc.ColorMapping = make(map[int]struct{ Zero, Full string })
-		for sliderIDStr, colors := range rawColorMapping {
-			sliderID, err := strconv.Atoi(sliderIDStr)
-			if err != nil {
-				cc.logger.Warnw("Invalid slider ID in color mapping key", "key", sliderIDStr, "error", err)
-				continue
-			}
-
-			cc.ColorMapping[sliderID] = struct{ Zero, Full string }{
-				Zero: colors["zero"],
-				Full: colors["full"],
-			}
-		}
-	}
+	cc.ColorMapping = cc.parseColorMapping()
+	cc.BackgroundLighting = strings.TrimSpace(cc.userConfig.GetString(configKeyBackgroundLighting))
 
 	cc.logger.Debug("Populated config fields from vipers")
 
@@ -288,4 +273,37 @@ func (cc *CanonicalConfig) onConfigReloaded() {
 	for _, consumer := range cc.reloadConsumers {
 		consumer <- true
 	}
+}
+
+func (cc *CanonicalConfig) parseColorMapping() map[int]SliderColorConfig {
+	result := make(map[int]SliderColorConfig)
+
+	raw := make(map[string]SliderColorConfig)
+	if err := cc.userConfig.UnmarshalKey(configKeyColorMapping, &raw); err != nil {
+		cc.logger.Warnw("Failed to parse color mapping from config", "error", err)
+		return result
+	}
+
+	for key, entry := range raw {
+		if entry.Zero == "" && entry.Full == "" {
+			continue
+		}
+
+		sliderIdx, err := strconv.Atoi(strings.TrimSpace(key))
+		if err != nil {
+			cc.logger.Warnw("Ignoring color mapping entry with non-numeric key", "key", key)
+			continue
+		}
+
+		zero := strings.TrimSpace(entry.Zero)
+		full := strings.TrimSpace(entry.Full)
+		if zero == "" || full == "" {
+			cc.logger.Warnw("Ignoring color mapping entry with missing colors", "key", key)
+			continue
+		}
+
+		result[sliderIdx] = SliderColorConfig{Zero: zero, Full: full}
+	}
+
+	return result
 }

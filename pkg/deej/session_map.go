@@ -82,11 +82,6 @@ func (m *sessionMap) initialize() error {
 	m.setupOnConfigReload()
 	m.setupOnSliderMove()
 
-	// if we're set to send data on startup, do that now
-	if m.deej.config.SendOnStartup {
-		m.sendAllSliderVolumes()
-	}
-
 	return nil
 }
 
@@ -212,8 +207,6 @@ func (m *sessionMap) sessionMapped(session Session) bool {
 }
 
 func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
 
 	// first of all, ensure our session map isn't moldy
 	if m.lastSessionRefresh.Add(maxTimeBetweenSessionRefreshes).Before(time.Now()) {
@@ -229,7 +222,8 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 		return
 	}
 
-	// track whether we matched any target for logging/debugging (not currently used)
+	targetFound := false
+	adjustmentFailed := false
 
 	// for each possible target for this slider...
 	for _, target := range targets {
@@ -249,89 +243,34 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 				continue
 			}
 
-			// matched at least one session for this resolved target
+			targetFound = true
 
 			// iterate all matching sessions and adjust the volume of each one
 			for _, session := range sessions {
 				if session.GetVolume() != event.PercentValue {
 					if err := session.SetVolume(event.PercentValue); err != nil {
-						m.logger.Warnw("Failed to set session volume", "session", session, "error", err)
+						m.logger.Warnw("Failed to set target session volume", "error", err)
+						adjustmentFailed = true
 					}
 				}
 			}
 		}
 	}
 
-	// if sync is enabled, send the new volume value over serial
-	if m.deej.config.SyncVolumes {
-		line := fmt.Sprintf("V:%d:%.4f", event.SliderID, event.PercentValue)
-		if err := m.deej.serial.WriteLine(line); err != nil {
-			m.logger.Warnw("Failed to send volume update to serial", "error", err)
-		}
+	// if we still haven't found a target or the volume adjustment failed, maybe look for the target again.
+	// processes could've opened since the last time this slider moved.
+	// if they haven't, the cooldown will take care to not spam it up
+	if !targetFound {
+		m.refreshSessions(false)
+	} else if adjustmentFailed {
+
+		// performance: the reason that forcing a refresh here is okay is that we'll only get here
+		// when a session's SetVolume call errored, such as in the case of a stale master session
+		// (or another, more catastrophic failure happens)
+		m.refreshSessions(true)
 	}
 }
 
-func (m *sessionMap) handleCurrentAppVolume() {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	// Find which slider is mapped to "deej.current"
-	var currentAppSliderID = -1
-	var currentTarget string
-
-	m.deej.config.SliderMapping.iterate(func(sliderID int, targets []string) {
-		for _, target := range targets {
-			if target == specialTargetTransformPrefix+specialTargetCurrentWindow {
-				currentAppSliderID = sliderID
-				currentTarget = target
-				return
-			}
-		}
-	})
-
-	// if no slider is mapped to the current app, do nothing
-	if currentAppSliderID == -1 {
-		return
-	}
-
-	// get the session for the current app
-	sessions, ok := m.get(currentTarget)
-	if ok && len(sessions) > 0 {
-		session := sessions[0]
-		volume := session.GetVolume()
-
-		// send its volume to the arduino
-		line := fmt.Sprintf("V:%d:%.4f", currentAppSliderID, volume)
-		if err := m.deej.serial.WriteLine(line); err != nil {
-			m.logger.Warnw("Failed to send current app volume update to serial", "error", err)
-		} else {
-			m.logger.Debugw("Sent current app volume update", "sliderID", currentAppSliderID, "volume", volume)
-		}
-	}
-}
-
-func (m *sessionMap) sendAllSliderVolumes() {
-	m.logger.Debug("Sending all slider volumes to Arduino")
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	m.deej.config.SliderMapping.iterate(func(sliderID int, targets []string) {
-		if len(targets) > 0 {
-			target := targets[0]
-			sessions, ok := m.get(target)
-
-			if ok && len(sessions) > 0 {
-				session := sessions[0]
-				volume := session.GetVolume()
-
-				line := fmt.Sprintf("V:%d:%.4f", sliderID, volume)
-				if err := m.deej.serial.WriteLine(line); err != nil {
-					m.logger.Warnw("Failed to send initial volume for slider", "sliderID", sliderID, "error", err)
-				}
-			}
-		}
-	})
-}
 func (m *sessionMap) targetHasSpecialTransform(target string) bool {
 	return strings.HasPrefix(target, specialTargetTransformPrefix)
 }

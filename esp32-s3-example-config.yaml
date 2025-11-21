@@ -11,7 +11,7 @@ invert_sliders: false
 
 # Connection settings for the ESP32-S3
 com_port: COM4
-baud_rate: 115200
+baud_rate: 9600
 
 # Noise reduction for encoders (can be 'low', 'default', or 'high')
 noise_reduction: default
@@ -29,7 +29,7 @@ sync_volumes: true
 color_mapping:
   0:
     zero: '#ff0000' # Red
-    full: '#00ff00' # Green
+    full: '#0000ff' # Green
   1:
     zero: '#ff0000'
     full: '#00ff00'
