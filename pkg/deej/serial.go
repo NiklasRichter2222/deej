@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jacobsa/go-serial/serial"
@@ -34,6 +35,9 @@ type SerialIO struct {
 	currentSliderPercentValues []float32
 
 	sliderMoveConsumers []chan SliderMoveEvent
+
+	lastSentSliderPositions   map[int]float32
+	lastSentSliderPositionsMu sync.Mutex
 }
 
 // SliderMoveEvent represents a single slider move captured by deej
@@ -50,12 +54,13 @@ func NewSerialIO(deej *Deej, logger *zap.SugaredLogger) (*SerialIO, error) {
 	logger = logger.Named("serial")
 
 	sio := &SerialIO{
-		deej:                deej,
-		logger:              logger,
-		stopChannel:         make(chan bool),
-		connected:           false,
-		conn:                nil,
-		sliderMoveConsumers: []chan SliderMoveEvent{},
+		deej:                    deej,
+		logger:                  logger,
+		stopChannel:             make(chan bool),
+		connected:               false,
+		conn:                    nil,
+		sliderMoveConsumers:     []chan SliderMoveEvent{},
+		lastSentSliderPositions: make(map[int]float32),
 	}
 
 	logger.Debug("Created serial i/o instance")
@@ -109,9 +114,14 @@ func (sio *SerialIO) Start() error {
 
 	namedLogger.Infow("Connected", "conn", sio.conn)
 	sio.connected = true
+	sio.resetSliderDisplayCache()
 
 	if err := sio.sendLightingConfiguration(namedLogger); err != nil {
 		namedLogger.Warnw("Failed to send lighting configuration", "error", err)
+	}
+
+	if err := sio.sendInitialSliderVolumes(namedLogger); err != nil {
+		namedLogger.Warnw("Failed to send initial slider volumes", "error", err)
 	}
 
 	// read lines or await a stop
@@ -212,6 +222,7 @@ func (sio *SerialIO) close(logger *zap.SugaredLogger) {
 
 	sio.conn = nil
 	sio.connected = false
+	sio.resetSliderDisplayCache()
 }
 
 func (sio *SerialIO) readLine(logger *zap.SugaredLogger, reader *bufio.Reader) chan string {
@@ -370,6 +381,86 @@ func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error 
 	}
 
 	return nil
+}
+
+// sendInitialSliderVolumes pushes the current session volumes to the controller for startup sync.
+func (sio *SerialIO) sendInitialSliderVolumes(logger *zap.SugaredLogger) error {
+	indices := []int{}
+
+	sio.deej.config.SliderMapping.iterate(func(sliderIdx int, _ []string) {
+		indices = append(indices, sliderIdx)
+	})
+
+	if len(indices) == 0 {
+		return nil
+	}
+
+	sort.Ints(indices)
+
+	for _, idx := range indices {
+		volume, ok := sio.deej.sessions.sliderVolume(idx)
+		if !ok {
+			if sio.deej.Verbose() {
+				logger.Debugw("No active sessions for slider, sending zero", "slider", idx)
+			}
+			volume = 0
+		}
+		if err := sio.SendSliderDisplayValue(idx, volume); err != nil {
+			return fmt.Errorf("send initial volume for slider %d: %w", idx, err)
+		}
+	}
+
+	return nil
+}
+
+// SendSliderDisplayValue sends a display update for a slider, caching the last transmitted value.
+func (sio *SerialIO) SendSliderDisplayValue(sliderIdx int, percent float32) error {
+	if sio.conn == nil || !sio.connected {
+		return nil
+	}
+
+	if percent < 0 {
+		percent = 0
+	} else if percent > 1 {
+		percent = 1
+	}
+
+	position := percent
+	if sio.deej.config.InvertSliders {
+		position = 1 - position
+	}
+
+	position = util.NormalizeScalar(position)
+
+	sio.lastSentSliderPositionsMu.Lock()
+	last, ok := sio.lastSentSliderPositions[sliderIdx]
+	sio.lastSentSliderPositionsMu.Unlock()
+
+	if ok && last == position {
+		return nil
+	}
+
+	payload := fmt.Sprintf("V:%d:%.3f", sliderIdx, position)
+	if err := sio.writeSerialLine(payload); err != nil {
+		return err
+	}
+
+	sio.lastSentSliderPositionsMu.Lock()
+	sio.lastSentSliderPositions[sliderIdx] = position
+	sio.lastSentSliderPositionsMu.Unlock()
+
+	if sio.deej.Verbose() {
+		sio.logger.Debugw("Sent slider display update", "slider", sliderIdx, "percent", percent, "position", position)
+	}
+
+	return nil
+}
+
+func (sio *SerialIO) resetSliderDisplayCache() {
+	sio.lastSentSliderPositionsMu.Lock()
+	defer sio.lastSentSliderPositionsMu.Unlock()
+
+	sio.lastSentSliderPositions = make(map[int]float32)
 }
 
 func (sio *SerialIO) writeSerialLine(payload string) error {

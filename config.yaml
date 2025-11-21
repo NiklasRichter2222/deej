@@ -8,12 +8,15 @@
 # important: slider indexes start at 0, regardless of which analog pins you're using!
 slider_mapping:
   0: master
-  1: chrome.exe
-  2: spotify.exe
-  3:
-    - pathofexile_x64.exe
-    - rocketleague.exe
-  4: discord.exe
+  1:
+    - deej.current
+    - helldivers2.exe
+  2: ts3client_win64.exe
+  3: discord.exe
+  4:
+    - spotify.exe
+    - youtube-music-desktop-app.exe
+  5: mic
 
 # Set to true if your encoders feel backwards
 invert_sliders: false

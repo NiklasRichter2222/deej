@@ -3,6 +3,7 @@ package deej
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,9 @@ type sessionMap struct {
 
 	lastSessionRefresh time.Time
 	unmappedSessions   []Session
+
+	sliderSyncStop     chan struct{}
+	sliderSyncStopOnce sync.Once
 }
 
 const (
@@ -61,11 +65,12 @@ func newSessionMap(deej *Deej, logger *zap.SugaredLogger, sessionFinder SessionF
 	logger = logger.Named("sessions")
 
 	m := &sessionMap{
-		deej:          deej,
-		logger:        logger,
-		m:             make(map[string][]Session),
-		lock:          &sync.Mutex{},
-		sessionFinder: sessionFinder,
+		deej:           deej,
+		logger:         logger,
+		m:              make(map[string][]Session),
+		lock:           &sync.Mutex{},
+		sessionFinder:  sessionFinder,
+		sliderSyncStop: make(chan struct{}),
 	}
 
 	logger.Debug("Created session map instance")
@@ -81,6 +86,7 @@ func (m *sessionMap) initialize() error {
 
 	m.setupOnConfigReload()
 	m.setupOnSliderMove()
+	m.setupSliderVolumeSync()
 
 	return nil
 }
@@ -90,6 +96,10 @@ func (m *sessionMap) release() error {
 		m.logger.Warnw("Failed to release session finder during session map release", "error", err)
 		return fmt.Errorf("release session finder during release: %w", err)
 	}
+
+	m.sliderSyncStopOnce.Do(func() {
+		close(m.sliderSyncStop)
+	})
 
 	return nil
 }
@@ -118,6 +128,8 @@ func (m *sessionMap) getAndAddSessions() error {
 	}
 
 	m.logger.Infow("Got all audio sessions successfully", "sessionMap", m)
+
+	m.syncAllSliderVolumes()
 
 	return nil
 }
@@ -268,6 +280,102 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 		// when a session's SetVolume call errored, such as in the case of a stale master session
 		// (or another, more catastrophic failure happens)
 		m.refreshSessions(true)
+	}
+}
+
+// sliderVolume reports the current average volume for all sessions mapped to a slider.
+func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
+	targets, ok := m.deej.config.SliderMapping.get(sliderIdx)
+	if !ok || len(targets) == 0 {
+		return 0, false
+	}
+
+	preferredVolumes := make([]float32, 0)
+	fallbackVolumes := make([]float32, 0)
+	preferCurrent := false
+
+	for _, target := range targets {
+		trimmedTarget := strings.ToLower(strings.TrimSpace(target))
+		resolvedTargets := m.resolveTarget(target)
+
+		for _, resolvedTarget := range resolvedTargets {
+			sessions, ok := m.get(resolvedTarget)
+			if !ok {
+				continue
+			}
+
+			for _, session := range sessions {
+				volume := session.GetVolume()
+				if trimmedTarget == specialTargetTransformPrefix+specialTargetCurrentWindow {
+					preferCurrent = true
+					preferredVolumes = append(preferredVolumes, volume)
+				} else {
+					fallbackVolumes = append(fallbackVolumes, volume)
+				}
+			}
+		}
+	}
+
+	volumes := fallbackVolumes
+	if preferCurrent {
+		volumes = preferredVolumes
+	}
+
+	if len(volumes) == 0 {
+		return 0, false
+	}
+
+	var total float32
+	for _, volume := range volumes {
+		total += volume
+	}
+
+	return total / float32(len(volumes)), true
+}
+
+func (m *sessionMap) setupSliderVolumeSync() {
+	const syncInterval = 500 * time.Millisecond
+
+	go func() {
+		ticker := time.NewTicker(syncInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				m.syncAllSliderVolumes()
+			case <-m.sliderSyncStop:
+				return
+			}
+		}
+	}()
+}
+
+func (m *sessionMap) syncAllSliderVolumes() {
+	indices := []int{}
+
+	m.deej.config.SliderMapping.iterate(func(sliderIdx int, _ []string) {
+		indices = append(indices, sliderIdx)
+	})
+
+	if len(indices) == 0 {
+		return
+	}
+
+	sort.Ints(indices)
+
+	for _, idx := range indices {
+		volume, ok := m.sliderVolume(idx)
+		if ok {
+			if err := m.deej.serial.SendSliderDisplayValue(idx, volume); err != nil {
+				m.logger.Warnw("Failed to sync slider display", "slider", idx, "error", err)
+			}
+			continue
+		}
+
+		if err := m.deej.serial.SendSliderDisplayValue(idx, 0); err != nil {
+			m.logger.Warnw("Failed to sync slider display", "slider", idx, "error", err)
+		}
 	}
 }
 
