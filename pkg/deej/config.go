@@ -21,6 +21,11 @@ type SliderColorConfig struct {
 	Full string `mapstructure:"full"`
 }
 
+type CommandSpec struct {
+	Args  []string
+	Shell bool
+}
+
 type CanonicalConfig struct {
 	SliderMapping *sliderMap
 
@@ -37,6 +42,7 @@ type CanonicalConfig struct {
 	SyncVolumes        bool
 	ColorMapping       map[int]SliderColorConfig
 	BackgroundLighting string
+	Commands           map[int]CommandSpec
 
 	logger             *zap.SugaredLogger
 	notifier           Notifier
@@ -68,6 +74,7 @@ const (
 	configKeySyncVolumes         = "sync_volumes"
 	configKeyColorMapping        = "color_mapping"
 	configKeyBackgroundLighting  = "background_lighting"
+	configKeyCommands            = "commands"
 
 	defaultCOMPort  = "COM4"
 	defaultBaudRate = 9600
@@ -108,6 +115,7 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	userConfig.SetDefault(configKeySyncVolumes, false)
 	userConfig.SetDefault(configKeyColorMapping, map[string]map[string]string{})
 	userConfig.SetDefault(configKeyBackgroundLighting, "")
+	userConfig.SetDefault(configKeyCommands, map[string]interface{}{})
 
 	internalConfig := viper.New()
 	internalConfig.SetConfigName(internalConfigName)
@@ -261,6 +269,7 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 	cc.SyncVolumes = cc.userConfig.GetBool(configKeySyncVolumes)
 	cc.ColorMapping = cc.parseColorMapping()
 	cc.BackgroundLighting = strings.TrimSpace(cc.userConfig.GetString(configKeyBackgroundLighting))
+	cc.Commands = cc.parseCommands()
 
 	cc.logger.Debug("Populated config fields from vipers")
 
@@ -306,4 +315,141 @@ func (cc *CanonicalConfig) parseColorMapping() map[int]SliderColorConfig {
 	}
 
 	return result
+}
+
+func (cc *CanonicalConfig) parseCommands() map[int]CommandSpec {
+	result := make(map[int]CommandSpec)
+
+	raw := cc.userConfig.GetStringMap(configKeyCommands)
+	for key, value := range raw {
+		sliderIdx, err := strconv.Atoi(strings.TrimSpace(key))
+		if err != nil {
+			cc.logger.Warnw("Ignoring command entry with non-numeric key", "key", key)
+			continue
+		}
+
+		spec, ok := cc.parseCommandValue(value)
+		if !ok {
+			continue
+		}
+
+		result[sliderIdx] = spec
+	}
+
+	return result
+}
+
+func (cc *CanonicalConfig) parseCommandValue(value interface{}) (CommandSpec, bool) {
+	switch typed := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return CommandSpec{}, false
+		}
+
+		return CommandSpec{
+			Args:  []string{trimmed},
+			Shell: true,
+		}, true
+	case []interface{}:
+		args := []string{}
+		for _, rawArg := range typed {
+			strArg, ok := rawArg.(string)
+			if !ok {
+				cc.logger.Warnw("Ignoring command entry with non-string argument", "value", rawArg)
+				return CommandSpec{}, false
+			}
+
+			trimmed := strings.TrimSpace(strArg)
+			if trimmed == "" {
+				continue
+			}
+			args = append(args, trimmed)
+		}
+
+		if len(args) == 0 {
+			return CommandSpec{}, false
+		}
+
+		return CommandSpec{
+			Args: args,
+		}, true
+	case []string:
+		args := []string{}
+		for _, rawArg := range typed {
+			trimmed := strings.TrimSpace(rawArg)
+			if trimmed == "" {
+				continue
+			}
+			args = append(args, trimmed)
+		}
+
+		if len(args) == 0 {
+			return CommandSpec{}, false
+		}
+
+		return CommandSpec{
+			Args: args,
+		}, true
+	case map[string]interface{}:
+		// allow optional explicit spec: { shell: true, args: [...] }
+		return cc.parseCommandMap(typed)
+	default:
+		cc.logger.Warnw("Ignoring command entry with unsupported type", "value", value)
+		return CommandSpec{}, false
+	}
+}
+
+func (cc *CanonicalConfig) parseCommandMap(value map[string]interface{}) (CommandSpec, bool) {
+	spec := CommandSpec{}
+
+	if shellValue, ok := value["shell"]; ok {
+		if shellBool, ok := shellValue.(bool); ok {
+			spec.Shell = shellBool
+		} else {
+			cc.logger.Warnw("Ignoring command entry with non-bool shell flag", "value", shellValue)
+			return CommandSpec{}, false
+		}
+	}
+
+	if argsValue, ok := value["args"]; ok {
+		switch typedArgs := argsValue.(type) {
+		case []interface{}:
+			for _, rawArg := range typedArgs {
+				strArg, ok := rawArg.(string)
+				if !ok {
+					cc.logger.Warnw("Ignoring command entry with non-string argument", "value", rawArg)
+					return CommandSpec{}, false
+				}
+
+				trimmed := strings.TrimSpace(strArg)
+				if trimmed == "" {
+					continue
+				}
+				spec.Args = append(spec.Args, trimmed)
+			}
+		case []string:
+			for _, rawArg := range typedArgs {
+				trimmed := strings.TrimSpace(rawArg)
+				if trimmed == "" {
+					continue
+				}
+				spec.Args = append(spec.Args, trimmed)
+			}
+		case string:
+			trimmed := strings.TrimSpace(typedArgs)
+			if trimmed != "" {
+				spec.Args = append(spec.Args, trimmed)
+			}
+		default:
+			cc.logger.Warnw("Ignoring command entry with unsupported args type", "value", argsValue)
+			return CommandSpec{}, false
+		}
+	}
+
+	if len(spec.Args) == 0 {
+		return CommandSpec{}, false
+	}
+
+	return spec, true
 }

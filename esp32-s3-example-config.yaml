@@ -43,3 +43,9 @@ color_mapping:
 # Controls the ambient background lighting on the controller.
 # Can be a single hex color (e.g., '#0000ff') or "rgb" for a rainbow effect.
 background_lighting: "rgb"
+
+output_devices: 
+  1: "Speakers (Realtek High Definition Audio)"
+  2: "Headphones (Realtek High Definition Audio)" 
+  3: "Digital Audio (S/PDIF) (Realtek High Definition Audio)"
+  4: "LG UltraGear (NVIDIA High Definition Audio)"

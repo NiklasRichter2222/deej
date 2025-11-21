@@ -61,3 +61,9 @@ color_mapping:
 # Controls the ambient background lighting on the controller.
 # Can be a single hex color (e.g., '#0000ff') or "rgb" for a rainbow effect.
 background_lighting: "rgb"
+
+commands: 
+  1: "start notepad.exe"   
+  2: "echo Slider 2 turned"
+  3: "echo Slider 3 turned"
+  4: "echo Slider 4 turned"

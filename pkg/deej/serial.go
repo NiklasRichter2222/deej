@@ -46,7 +46,7 @@ type SliderMoveEvent struct {
 	PercentValue float32
 }
 
-var expectedLinePattern = regexp.MustCompile(`^\d{1,4}(\|\d{1,4})*\r\n$`)
+var expectedLinePattern = regexp.MustCompile(`^\d{1,4}(\|\d{1,4})*$`)
 
 // NewSerialIO creates a SerialIO instance that uses the provided deej
 // instance's connection info to establish communications with the arduino chip
@@ -256,17 +256,25 @@ func (sio *SerialIO) readLine(logger *zap.SugaredLogger, reader *bufio.Reader) c
 func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 
 	// this function receives an unsanitized line which is guaranteed to end with LF,
-	// but most lines will end with CRLF. it may also have garbage instead of
-	// deej-formatted values, so we must check for that! just ignore bad ones
-	if !expectedLinePattern.MatchString(line) {
+	// but most lines will end with CRLF.
+	sanitized := strings.TrimRight(line, "\r\n")
+
+	if sanitized == "" {
 		return
 	}
 
-	// trim the suffix
-	line = strings.TrimSuffix(line, "\r\n")
+	if sio.tryHandleCommand(logger, sanitized) {
+		return
+	}
+
+	// may have garbage instead of deej-formatted values, so we must check for that!
+	// just ignore bad ones
+	if !expectedLinePattern.MatchString(sanitized) {
+		return
+	}
 
 	// split on pipe (|), this gives a slice of numerical strings between "0" and "1023"
-	splitLine := strings.Split(line, "|")
+	splitLine := strings.Split(sanitized, "|")
 	numSliders := len(splitLine)
 
 	// update our slider count, if needed - this will send slider move events for all
@@ -291,7 +299,7 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 		// turns out the first line could come out dirty sometimes (i.e. "4558|925|41|643|220")
 		// so let's check the first number for correctness just in case
 		if sliderIdx == 0 && number > 1023 {
-			sio.logger.Debugw("Got malformed line from serial, ignoring", "line", line)
+			sio.logger.Debugw("Got malformed line from serial, ignoring", "line", sanitized)
 			return
 		}
 
@@ -331,6 +339,36 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 			}
 		}
 	}
+}
+
+func (sio *SerialIO) tryHandleCommand(logger *zap.SugaredLogger, line string) bool {
+	if len(line) < 3 {
+		return false
+	}
+
+	if (line[0] != 'O' && line[0] != 'o') || line[1] != ':' {
+		return false
+	}
+
+	payload := strings.TrimSpace(line[2:])
+	if payload == "" {
+		if sio.deej.Verbose() {
+			logger.Debugw("Ignoring command with empty payload", "line", line)
+		}
+		return true
+	}
+
+	index, err := strconv.Atoi(payload)
+	if err != nil {
+		if sio.deej.Verbose() {
+			logger.Debugw("Ignoring command with non-numeric index", "payload", payload)
+		}
+		return true
+	}
+
+	sio.deej.RunConfiguredCommand(index)
+
+	return true
 }
 
 func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error {
