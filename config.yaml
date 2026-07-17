@@ -22,7 +22,7 @@ slider_mapping:
 invert_sliders: false
 
 # Connection settings for the ESP32-S3
-com_port: COM13
+com_port: COM8
 baud_rate: 9600
 
 # Noise reduction for encoders (can be 'low', 'default', or 'high')

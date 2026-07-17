@@ -3,6 +3,7 @@
 #include <InterruptEncoder.h>
 #include <ESP32Encoder.h>
 
+
 // --- System Configuration ---
 const unsigned long DEBOUNCE_DELAY = 50;
 const int MAX_ENCODER_VALUE = 100; // Increased for more granular control (0-100%)
