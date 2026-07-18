@@ -111,7 +111,7 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	userConfig.AddConfigPath(userConfigPath)
 
 	userConfig.SetDefault(configKeySliderMapping, map[string][]string{})
-	userConfig.SetDefault(configKeySliderCount, defaultSliders)
+	userConfig.SetDefault(configKeySliderCount, 0)
 	userConfig.SetDefault(configKeyInvertSliders, false)
 	userConfig.SetDefault(configKeyCOMPort, defaultCOMPort)
 	userConfig.SetDefault(configKeyBaudRate, defaultBaudRate)
