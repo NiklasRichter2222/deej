@@ -28,6 +28,7 @@ type CommandSpec struct {
 
 type CanonicalConfig struct {
 	SliderMapping *sliderMap
+	SliderCount   int
 
 	ConnectionInfo struct {
 		COMPort  string
@@ -66,6 +67,7 @@ const (
 	configType = "yaml"
 
 	configKeySliderMapping       = "slider_mapping"
+	configKeySliderCount         = "slider_count"
 	configKeyInvertSliders       = "invert_sliders"
 	configKeyCOMPort             = "com_port"
 	configKeyBaudRate            = "baud_rate"
@@ -78,6 +80,7 @@ const (
 
 	defaultCOMPort  = "COM4"
 	defaultBaudRate = 9600
+	defaultSliders  = 5
 )
 
 // has to be defined as a non-constant because we're using path.Join
@@ -108,6 +111,7 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	userConfig.AddConfigPath(userConfigPath)
 
 	userConfig.SetDefault(configKeySliderMapping, map[string][]string{})
+	userConfig.SetDefault(configKeySliderCount, defaultSliders)
 	userConfig.SetDefault(configKeyInvertSliders, false)
 	userConfig.SetDefault(configKeyCOMPort, defaultCOMPort)
 	userConfig.SetDefault(configKeyBaudRate, defaultBaudRate)
@@ -173,7 +177,8 @@ func (cc *CanonicalConfig) Load() error {
 	cc.logger.Infow("Config values",
 		"sliderMapping", cc.SliderMapping,
 		"connectionInfo", cc.ConnectionInfo,
-		"invertSliders", cc.InvertSliders)
+		"invertSliders", cc.InvertSliders,
+		"sliderCount", cc.SliderCount)
 
 	return nil
 }
@@ -268,12 +273,37 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 	cc.SendOnStartup = cc.userConfig.GetBool(configKeySendOnStartup)
 	cc.SyncVolumes = cc.userConfig.GetBool(configKeySyncVolumes)
 	cc.ColorMapping = cc.parseColorMapping()
+	cc.SliderCount = cc.userConfig.GetInt(configKeySliderCount)
+	if cc.SliderCount <= 0 {
+		cc.SliderCount = cc.inferSliderCount()
+	}
 	cc.BackgroundLighting = strings.TrimSpace(cc.userConfig.GetString(configKeyBackgroundLighting))
 	cc.Commands = cc.parseCommands()
 
 	cc.logger.Debug("Populated config fields from vipers")
 
 	return nil
+}
+
+func (cc *CanonicalConfig) inferSliderCount() int {
+	maxSliderIdx := -1
+	cc.SliderMapping.iterate(func(sliderIdx int, _ []string) {
+		if sliderIdx > maxSliderIdx {
+			maxSliderIdx = sliderIdx
+		}
+	})
+
+	for sliderIdx := range cc.ColorMapping {
+		if sliderIdx > maxSliderIdx {
+			maxSliderIdx = sliderIdx
+		}
+	}
+
+	if maxSliderIdx >= 0 {
+		return maxSliderIdx + 1
+	}
+
+	return defaultSliders
 }
 
 func (cc *CanonicalConfig) onConfigReloaded() {

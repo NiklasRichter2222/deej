@@ -49,8 +49,11 @@ deej is written in Go and [distributed](https://github.com/omriharel/deej/releas
   - Bind currently active app (on Windows)
   - Bind all other unassigned apps
 - Control your microphone's input level
+- Optional bidirectional sync (send current PC volumes to your controller)
+- Controller lighting support (background lighting + per-slider colors)
 - Lightweight desktop client, consuming around 10MB of memory
 - Runs from your system tray
+  - Includes a tray action to open a browser-based configuration UI
 - Helpful notifications to let you know if something isn't working
 
 > **Looking for the older Python version?** It's no longer maintained, but you can always find it in the [`legacy-python` branch](https://github.com/omriharel/deej/tree/legacy-python).
@@ -82,25 +85,48 @@ The config file determines which applications (and devices) are mapped to which 
 It looks like this:
 
 ```yaml
+# --- Slider Mapping ---
+slider_count: 6
 slider_mapping:
   0: master
-  1: chrome.exe
-  2: spotify.exe
+  1:
+    - deej.current
+    - helldivers2.exe
+  2: ts3client_win64.exe
   3:
-    - pathofexile_x64.exe
-    - rocketleague.exe
-  4: discord.exe
+    - discord.exe
+    - spotify.exe
+  4: deej.unmapped
+  5: mic
 
 # set this to true if you want the controls inverted (i.e. top is 0%, bottom is 100%)
 invert_sliders: false
 
-# settings for connecting to the arduino board
-com_port: COM4
+# settings for connecting to the controller board
+com_port: COM8
 baud_rate: 9600
 
 # adjust the amount of signal noise reduction depending on your hardware quality
 # supported values are "low" (excellent hardware), "default" (regular hardware) or "high" (bad, noisy hardware)
 noise_reduction: default
+
+# send current lighting + slider volumes to the controller when deej starts
+send_on_startup: true
+
+# continuously send PC-side volume changes back to the controller
+sync_volumes: true
+
+# optional controller ambient lighting ("rgb" or a hex color)
+background_lighting: "rgb"
+
+# optional slider LED colors from 0% (zero) to 100% (full)
+color_mapping:
+  0:
+    zero: "#ff0000"
+    full: "#00ff00"
+  1:
+    zero: "#ff0000"
+    full: "#00ffff"
 ```
 
 - `master` is a special option to control the master volume of the system _(uses the default playback device)_
@@ -114,6 +140,28 @@ noise_reduction: default
 - You can create groups of process names (using a list) to either:
     - control more than one app with a single slider
     - choose whichever process in the group that's currently running (i.e. to have one slider control any game you're playing)
+- `slider_count` controls how many sliders are shown in the configuration UI
+- `send_on_startup` sends current PC-side slider values (and lighting config) to your controller on startup
+- `sync_volumes` continuously mirrors PC-side volume changes back to the controller
+- `background_lighting` sets the controller background LEDs (`rgb` or a hex color such as `#0000ff`)
+- `color_mapping` controls each slider's 0%-to-100% LED colors
+
+### Configuration UI
+
+deej also includes a lightweight browser-based configuration UI that writes `config.yaml` for you:
+
+1. Right-click the deej tray icon
+2. Click **Open configuration UI**
+3. Edit settings (slider mappings, serial connection, toggles, colors, profiles)
+4. Click **Save to config.yaml**
+
+The UI supports:
+- Selecting running applications from a dropdown (or entering custom targets)
+- Multiple targets per slider
+- COM/TTY selection from detected ports (with manual override)
+- Background color presets + custom color picker
+- Per-slider color mode (single color or changing gradient)
+- Basic profile management in `profiles/*.yaml` and loading a profile into `config.yaml`
 
 ## Build your own!
 

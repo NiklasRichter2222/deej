@@ -505,3 +505,16 @@ func (m *sessionMap) String() string {
 
 	return fmt.Sprintf("<%d audio sessions>", sessionCount)
 }
+
+func (m *sessionMap) listSessionKeys() []string {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	keys := make([]string, 0, len(m.m))
+	for key := range m.m {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+	return keys
+}

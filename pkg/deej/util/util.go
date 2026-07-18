@@ -80,6 +80,26 @@ func OpenExternal(logger *zap.SugaredLogger, cmd string, arg string) error {
 	return nil
 }
 
+// OpenURL opens a URL using the operating system's default handler.
+func OpenURL(logger *zap.SugaredLogger, url string) error {
+	var command *exec.Cmd
+
+	if Linux() {
+		command = exec.Command("xdg-open", url)
+	} else if Windows() {
+		command = exec.Command("cmd.exe", "/C", "start", "", url)
+	} else {
+		return fmt.Errorf("open url: unsupported platform")
+	}
+
+	if err := command.Run(); err != nil {
+		logger.Warnw("Failed to open URL", "url", url, "error", err)
+		return fmt.Errorf("open url: %w", err)
+	}
+
+	return nil
+}
+
 // NormalizeScalar "trims" the given float32 to 2 points of precision (e.g. 0.15442 -> 0.15)
 // This is used both for windows core audio volume levels and for cleaning up slider level values from serial
 func NormalizeScalar(v float32) float32 {
