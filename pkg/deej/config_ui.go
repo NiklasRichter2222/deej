@@ -457,7 +457,9 @@ func saveConfigToPath(config configUIConfig, targetPath string) error {
 	fmt.Fprintf(buf, "noise_reduction: %s\n", yamlString(noiseReduction))
 
 	buf.WriteString("\n# --- Connection Settings ---\n")
-	fmt.Fprintf(buf, "com_port: %s\n", yamlString(strings.TrimSpace(config.COMPort)))
+	comPort := strings.TrimSpace(config.COMPort)
+	if comPort == "" { comPort = defaultCOMPort }
+	fmt.Fprintf(buf, "com_port: %s\n", yamlString(comPort))
 	fmt.Fprintf(buf, "baud_rate: %d\n", normalizeBaudRate(config.BaudRate))
 
 	buf.WriteString("\n# --- Bidirectional Sync Settings ---\n")
