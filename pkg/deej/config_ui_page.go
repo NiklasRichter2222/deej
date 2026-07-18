@@ -16,6 +16,7 @@ const configUIHTML = `<!doctype html>
     .col { flex: 1 1 220px; min-width: 220px; }
     label { font-size: 13px; display: block; margin-bottom: 6px; }
     input, select, button { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid #555; background: #111; color: #f1f1f1; }
+    input[type="color"] { padding: 2px; height: 38px; background: transparent; }
     button { cursor: pointer; background: #2f6feb; border-color: #2f6feb; }
     button.secondary { background: #333; border-color: #555; }
     .inline { display: flex; gap: 8px; align-items: center; }
@@ -91,6 +92,14 @@ const configUIHTML = `<!doctype html>
     <section>
       <h2>Options</h2>
       <div class="row">
+        <div class="col">
+          <label for="noiseReduction">Noise reduction</label>
+          <select id="noiseReduction">
+            <option value="low">Low</option>
+            <option value="default">Default</option>
+            <option value="high">High</option>
+          </select>
+        </div>
         <div class="col toggle"><input id="invertSliders" type="checkbox"><label for="invertSliders">Invert sliders</label></div>
         <div class="col toggle"><input id="sendOnStartup" type="checkbox"><label for="sendOnStartup">Send on startup</label></div>
         <div class="col toggle"><input id="syncVolumes" type="checkbox"><label for="syncVolumes">Sync volumes continuously</label></div>
@@ -159,7 +168,7 @@ const configUIHTML = `<!doctype html>
       for (let i = 0; i < config.sliderCount; i++) {
         const key = String(i);
         sliderTargets[key] = [...(config.sliderMapping[key] || [])];
-        sliderColors[key] = config.colorMapping[key] || { mode: 'gradient', zero: '#ff0000', full: '#00ff00' };
+        sliderColors[key] = config.colorMapping[key] || { zero: '#ff0000', full: '#00ff00' };
       }
     }
 
@@ -211,6 +220,8 @@ const configUIHTML = `<!doctype html>
       } else if (current.startsWith('#') && current.length === 7) {
         bgPreset.value = 'custom';
         byId('bgCustom').value = current;
+      } else if (!current) {
+        bgPreset.value = 'off';
       } else {
         bgPreset.value = 'custom';
       }
@@ -287,36 +298,26 @@ const configUIHTML = `<!doctype html>
 
       for (let i = 0; i < count; i++) {
         const key = String(i);
-        if (!sliderColors[key]) sliderColors[key] = { mode: 'gradient', zero: '#ff0000', full: '#00ff00' };
+        if (!sliderColors[key]) sliderColors[key] = { zero: '#ff0000', full: '#00ff00' };
         const cfg = sliderColors[key];
 
         const card = document.createElement('div');
         card.className = 'slider-card';
         card.innerHTML = '<h3>Slider ' + i + '</h3>' +
-          '<div class="row"><div class="col"><label>Color mode</label><select id="mode-' + key + '"><option value="single">Single color</option><option value="gradient">Color changes</option></select></div></div>' +
-          '<div class="row"><div class="col"><label>Start color</label><input id="zero-' + key + '" type="color"></div><div class="col" id="full-wrap-' + key + '"><label>End color</label><input id="full-' + key + '" type="color"></div></div>';
+          '<div class="row"><div class="col"><label>Start color</label><input id="zero-' + key + '" type="color"></div><div class="col"><label>End color</label><input id="full-' + key + '" type="color"></div><div class="col"><label>&nbsp;</label><button class="secondary" id="copy-zero-full-' + key + '">Copy start → end</button></div></div>';
         wrap.appendChild(card);
 
-        byId('mode-' + key).value = cfg.mode || 'gradient';
         byId('zero-' + key).value = cfg.zero || '#ff0000';
         byId('full-' + key).value = cfg.full || '#00ff00';
 
-        byId('mode-' + key).onchange = () => {
-          sliderColors[key].mode = byId('mode-' + key).value;
-          toggleColorMode(key);
-        };
         byId('zero-' + key).onchange = () => { sliderColors[key].zero = byId('zero-' + key).value; };
         byId('full-' + key).onchange = () => { sliderColors[key].full = byId('full-' + key).value; };
-
-        toggleColorMode(key);
+        byId('copy-zero-full-' + key).onclick = () => {
+          const value = byId('zero-' + key).value;
+          sliderColors[key].full = value;
+          byId('full-' + key).value = value;
+        };
       }
-    }
-
-    function toggleColorMode(key) {
-      const mode = byId('mode-' + key).value;
-      const fullWrap = byId('full-wrap-' + key);
-      fullWrap.style.display = mode === 'single' ? 'none' : '';
-      sliderColors[key].mode = mode;
     }
 
     function toggleBgCustom() {
@@ -332,9 +333,8 @@ const configUIHTML = `<!doctype html>
         const key = String(i);
         sliderMapping[key] = [...(sliderTargets[key] || [])];
 
-        const color = sliderColors[key] || { mode: 'gradient', zero: '#ff0000', full: '#00ff00' };
+        const color = sliderColors[key] || { zero: '#ff0000', full: '#00ff00' };
         colorMapping[key] = {
-          mode: color.mode || 'gradient',
           zero: color.zero || '#ff0000',
           full: color.full || '#00ff00',
         };
@@ -346,7 +346,7 @@ const configUIHTML = `<!doctype html>
         comPort: byId('comPort').value.trim(),
         baudRate: Number(byId('baudRate').value || 9600),
         invertSliders: byId('invertSliders').checked,
-        noiseReduction: state.config.noiseReduction || 'default',
+        noiseReduction: byId('noiseReduction').value || 'default',
         sendOnStartup: byId('sendOnStartup').checked,
         syncVolumes: byId('syncVolumes').checked,
         backgroundLighting: byId('bgPreset').value === 'custom' ? byId('bgCustom').value : byId('bgPreset').value,
@@ -363,6 +363,7 @@ const configUIHTML = `<!doctype html>
       byId('comPort').value = state.config.comPort || '';
       byId('baudRate').value = state.config.baudRate || 9600;
       byId('invertSliders').checked = !!state.config.invertSliders;
+      byId('noiseReduction').value = state.config.noiseReduction || 'default';
       byId('sendOnStartup').checked = !!state.config.sendOnStartup;
       byId('syncVolumes').checked = !!state.config.syncVolumes;
 

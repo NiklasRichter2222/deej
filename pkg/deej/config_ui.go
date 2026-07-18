@@ -208,9 +208,7 @@ func (s *configUIService) handleState(w http.ResponseWriter, r *http.Request) {
 		},
 		BgPresets: []configUIBackgroundOpt{
 			{Name: "RGB rainbow", Value: "rgb"},
-			{Name: "Off (black)", Value: "#000000"},
-			{Name: "Blue", Value: "#0000ff"},
-			{Name: "Purple", Value: "#8000ff"},
+			{Name: "Off", Value: "off"},
 			{Name: "Custom", Value: "custom"},
 		},
 	}
@@ -418,7 +416,7 @@ func saveConfigToPath(config configUIConfig, targetPath string) error {
 	if strings.EqualFold(backgroundLighting, "custom") {
 		backgroundLighting = ""
 	}
-	if backgroundLighting != "" && !strings.EqualFold(backgroundLighting, "rgb") && !isHexColor(backgroundLighting) {
+	if backgroundLighting != "" && !strings.EqualFold(backgroundLighting, "rgb") && !strings.EqualFold(backgroundLighting, "off") && !isHexColor(backgroundLighting) {
 		backgroundLighting = ""
 	}
 
@@ -458,7 +456,9 @@ func saveConfigToPath(config configUIConfig, targetPath string) error {
 
 	buf.WriteString("\n# --- Connection Settings ---\n")
 	comPort := strings.TrimSpace(config.COMPort)
-	if comPort == "" { comPort = defaultCOMPort }
+	if comPort == "" {
+		comPort = defaultCOMPort
+	}
 	fmt.Fprintf(buf, "com_port: %s\n", yamlString(comPort))
 	fmt.Fprintf(buf, "baud_rate: %d\n", normalizeBaudRate(config.BaudRate))
 
