@@ -1,10 +1,14 @@
 package deej
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"io/ioutil"
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -53,6 +57,9 @@ type CanonicalConfig struct {
 
 	userConfig     *viper.Viper
 	internalConfig *viper.Viper
+
+	configFingerprintMu sync.Mutex
+	configFingerprint   string
 }
 
 const (
@@ -179,6 +186,7 @@ func (cc *CanonicalConfig) Load() error {
 		"connectionInfo", cc.ConnectionInfo,
 		"invertSliders", cc.InvertSliders,
 		"sliderCount", cc.SliderCount)
+	cc.captureConfigFingerprint()
 
 	return nil
 }
@@ -221,13 +229,18 @@ func (cc *CanonicalConfig) WatchConfigFileChanges() {
 				// wait a bit to let the editor actually flush the new file contents to disk
 				<-time.After(delayBetweenEventAndReload)
 
+				beforeFingerprint := cc.currentConfigFingerprint()
 				if err := cc.Load(); err != nil {
 					cc.logger.Warnw("Failed to reload config file", "error", err)
 				} else {
-					cc.logger.Info("Reloaded config successfully")
-					cc.notifier.Notify("Configuration reloaded!", "Your changes have been applied.")
+					if !cc.configChangedSince(beforeFingerprint) {
+						cc.logger.Debug("Config reload produced no changes, suppressing duplicate notification")
+					} else {
+						cc.logger.Info("Reloaded config successfully")
+						cc.notifier.Notify("Configuration reloaded!", "Your changes have been applied.")
 
-					cc.onConfigReloaded()
+						cc.onConfigReloaded()
+					}
 				}
 
 				// don't forget to update the time
@@ -482,4 +495,36 @@ func (cc *CanonicalConfig) parseCommandMap(value map[string]interface{}) (Comman
 	}
 
 	return spec, true
+}
+
+func (cc *CanonicalConfig) captureConfigFingerprint() {
+	content, err := ioutil.ReadFile(userConfigFilepath)
+	if err != nil {
+		cc.logger.Debugw("Failed to capture config fingerprint", "error", err)
+		return
+	}
+
+	sum := sha1.Sum(content)
+	fingerprint := hex.EncodeToString(sum[:])
+
+	cc.configFingerprintMu.Lock()
+	cc.configFingerprint = fingerprint
+	cc.configFingerprintMu.Unlock()
+}
+
+func (cc *CanonicalConfig) configChangedSince(previous string) bool {
+	current := cc.currentConfigFingerprint()
+
+	if previous == "" || current == "" {
+		return true
+	}
+
+	return previous != current
+}
+
+func (cc *CanonicalConfig) currentConfigFingerprint() string {
+	cc.configFingerprintMu.Lock()
+	defer cc.configFingerprintMu.Unlock()
+
+	return cc.configFingerprint
 }

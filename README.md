@@ -116,7 +116,7 @@ send_on_startup: true
 # continuously send PC-side volume changes back to the controller
 sync_volumes: true
 
-# optional controller ambient lighting ("rgb" or a hex color)
+# optional controller ambient lighting ("rgb", "off" or a hex color)
 background_lighting: "rgb"
 
 # optional slider LED colors from 0% (zero) to 100% (full)
@@ -143,7 +143,7 @@ color_mapping:
 - `slider_count` controls how many sliders are shown in the configuration UI
 - `send_on_startup` sends current PC-side slider values (and lighting config) to your controller on startup
 - `sync_volumes` continuously mirrors PC-side volume changes back to the controller
-- `background_lighting` sets the controller background LEDs (`rgb` or a hex color such as `#0000ff`)
+- `background_lighting` sets the controller background LEDs (`rgb`, `off` or a hex color such as `#0000ff`)
 - `color_mapping` controls each slider's 0%-to-100% LED colors
 
 ### Configuration UI
@@ -159,8 +159,9 @@ The UI supports:
 - Selecting running applications from a dropdown (or entering custom targets)
 - Multiple targets per slider
 - COM/TTY selection from detected ports (with manual override)
-- Background color presets + custom color picker
-- Per-slider color mode (single color or changing gradient)
+- Noise reduction selection (low/default/high)
+- Background lighting presets (rainbow/off/custom color)
+- Per-slider start/end color pickers with a quick "copy start to end" action
 - Basic profile management in `profiles/*.yaml` and loading a profile into `config.yaml`
 
 ## Build your own!
