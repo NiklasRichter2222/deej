@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <InterruptEncoder.h>
 #include <ESP32Encoder.h>
+#include <stdlib.h>
 
 
 // --- System Configuration ---
@@ -157,6 +158,8 @@ void sendEncoderValues();
 void updateBackgroundLighting();
 Color hexToColor(String hex);
 Color Wheel(byte WheelPos);
+bool parseIntStrict(const String& value, int& outValue);
+bool parseFloatStrict(const String& value, float& outValue);
 
 double encoderCountToVolume(long rawCount);
 long volumeToEncoderCount(double volume);
@@ -326,11 +329,17 @@ void handleSerialCommands() {
             String volumePart = payload.substring(secondColonPos + 1);
             indexPart.trim();
             volumePart.trim();
-            int encoderIndex = indexPart.toInt();
-            float volume = volumePart.toFloat();
-            if (encoderIndex >= 0 && encoderIndex < numEncoders) {
-              encoders[encoderIndex].lastDetentPosition = (long)round(volume * MAX_ENCODER_VALUE);
-              encoders[encoderIndex].setRawCount(volumeToEncoderCount(encoders[encoderIndex].lastDetentPosition));
+            int encoderIndex = -1;
+            float volume = 0.0f;
+            if (parseIntStrict(indexPart, encoderIndex) &&
+                parseFloatStrict(volumePart, volume) &&
+                encoderIndex >= 0 && encoderIndex < numEncoders) {
+              float clampedVolume = constrain(volume, 0.0f, 1.0f);
+              long clampedPosition = (long)round(clampedVolume * MAX_ENCODER_VALUE);
+              clampedPosition = constrain(clampedPosition, 0L, (long)MAX_ENCODER_VALUE);
+
+              encoders[encoderIndex].lastDetentPosition = clampedPosition;
+              encoders[encoderIndex].setRawCount(volumeToEncoderCount(clampedPosition));
               updateEncoderLedDisplay(encoderIndex);
             }
           }
@@ -340,12 +349,13 @@ void handleSerialCommands() {
           if (secondColonPos > 0 && thirdColonPos > secondColonPos) {
             String encoderPart = payload.substring(0, secondColonPos);
             encoderPart.trim();
-            int encoderIndex = encoderPart.toInt();
+            int encoderIndex = -1;
             String zeroHex = payload.substring(secondColonPos + 1, thirdColonPos);
             String fullHex = payload.substring(thirdColonPos + 1);
             zeroHex.trim();
             fullHex.trim();
-            if (encoderIndex >= 0 && encoderIndex < numEncoders) {
+            if (parseIntStrict(encoderPart, encoderIndex) &&
+                encoderIndex >= 0 && encoderIndex < numEncoders) {
               encoders[encoderIndex].zeroColor = hexToColor(zeroHex);
               encoders[encoderIndex].fullColor = hexToColor(fullHex);
               updateEncoderLedDisplay(encoderIndex);
@@ -364,7 +374,11 @@ void handleSerialCommands() {
             }
           }
         } else if (commandID == 'O') { // Output device select: O:index(1-4)
-          int requestedIndex = payload.toInt() - 1;
+          int selectedOneBasedIndex = 0;
+          if (!parseIntStrict(payload, selectedOneBasedIndex)) {
+            continue;
+          }
+          int requestedIndex = selectedOneBasedIndex - 1;
           if (requestedIndex >= 0 && requestedIndex < numButtons) {
             applyOutputSelection(requestedIndex, false);
           }
@@ -383,8 +397,9 @@ void handleSerialCommands() {
 void updateEncoderLedDisplay(int encoderIndex) {
   EncoderInfo& enc = encoders[encoderIndex];
 
-  float volumePercent = (float)enc.lastDetentPosition / MAX_ENCODER_VALUE;
-  int ledsToLight = round(volumePercent * ENCODER_LED_COUNT);
+  long clampedPosition = constrain(enc.lastDetentPosition, 0L, (long)MAX_ENCODER_VALUE);
+  float volumePercent = (float)clampedPosition / MAX_ENCODER_VALUE;
+  int ledsToLight = constrain((int)round(volumePercent * ENCODER_LED_COUNT), 0, ENCODER_LED_COUNT);
 
   for (int i = 1; i <= ENCODER_LED_COUNT; i++) {
     int globalLedNum = enc.startLed + i - 1;
@@ -497,4 +512,38 @@ Color Wheel(byte WheelPos) {
   }
   WheelPos -= 170;
   return { (byte)(WheelPos * 3), (byte)(255 - WheelPos * 3), 0 };
+}
+
+bool parseIntStrict(const String& value, int& outValue) {
+  String trimmed = value;
+  trimmed.trim();
+  if (trimmed.length() == 0) {
+    return false;
+  }
+
+  char* endPtr = nullptr;
+  long parsedValue = strtol(trimmed.c_str(), &endPtr, 10);
+  if (endPtr == nullptr || *endPtr != '\0') {
+    return false;
+  }
+
+  outValue = (int)parsedValue;
+  return true;
+}
+
+bool parseFloatStrict(const String& value, float& outValue) {
+  String trimmed = value;
+  trimmed.trim();
+  if (trimmed.length() == 0) {
+    return false;
+  }
+
+  char* endPtr = nullptr;
+  float parsedValue = strtof(trimmed.c_str(), &endPtr);
+  if (endPtr == nullptr || *endPtr != '\0') {
+    return false;
+  }
+
+  outValue = parsedValue;
+  return true;
 }

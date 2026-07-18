@@ -301,9 +301,8 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 		// convert string values to integers ("1023" -> 1023)
 		number, _ := strconv.Atoi(stringValue)
 
-		// turns out the first line could come out dirty sometimes (i.e. "4558|925|41|643|220")
-		// so let's check the first number for correctness just in case
-		if sliderIdx == 0 && number > 1023 {
+		// turns out serial lines can occasionally come out dirty; reject any out-of-range value
+		if number < 0 || number > 1023 {
 			sio.logger.Debugw("Got malformed line from serial, ignoring", "line", sanitized)
 			return
 		}
@@ -440,6 +439,10 @@ func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error 
 
 // sendInitialSliderVolumes pushes the current session volumes to the controller for startup sync.
 func (sio *SerialIO) sendInitialSliderVolumes(logger *zap.SugaredLogger) error {
+	if !sio.deej.config.SendOnStartup {
+		return nil
+	}
+
 	indices := []int{}
 
 	sio.deej.config.SliderMapping.iterate(func(sliderIdx int, _ []string) {

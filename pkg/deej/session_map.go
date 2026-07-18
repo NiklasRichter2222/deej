@@ -135,7 +135,9 @@ func (m *sessionMap) getAndAddSessions() error {
 
 	m.logger.Infow("Got all audio sessions successfully", "sessionMap", m)
 
-	m.syncAllSliderVolumes()
+	if m.deej.config.SyncVolumes {
+		m.syncAllSliderVolumes()
+	}
 
 	return nil
 }
@@ -361,6 +363,9 @@ func (m *sessionMap) setupSliderVolumeSync() {
 		for {
 			select {
 			case <-ticker.C:
+				if !m.deej.config.SyncVolumes {
+					continue
+				}
 				m.syncAllSliderVolumes()
 			case <-m.sliderSyncStop:
 				return
