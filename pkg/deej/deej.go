@@ -25,6 +25,7 @@ type Deej struct {
 	config   *CanonicalConfig
 	serial   *SerialIO
 	sessions *sessionMap
+	configUI *configUIService
 
 	stopChannel chan bool
 	version     string
@@ -76,6 +77,7 @@ func NewDeej(logger *zap.SugaredLogger, verbose bool) (*Deej, error) {
 	}
 
 	d.sessions = sessions
+	d.configUI = newConfigUIService(d, logger)
 
 	logger.Debug("Created deej instance")
 
@@ -192,6 +194,7 @@ func (d *Deej) stop() error {
 
 	d.config.StopWatchingConfigFile()
 	d.serial.Stop()
+	d.configUI.Stop()
 
 	// release the session map
 	if err := d.sessions.release(); err != nil {
