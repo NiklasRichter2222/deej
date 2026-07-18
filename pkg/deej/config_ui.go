@@ -500,7 +500,7 @@ func normalizeTargets(raw []string) []string {
 
 	for _, target := range raw {
 		trimmed := strings.TrimSpace(target)
-		if trimmed == "" {
+		if trimmed == "" || strings.ContainsAny(trimmed, "\r\n") {
 			continue
 		}
 
