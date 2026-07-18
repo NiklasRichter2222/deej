@@ -1,16 +1,10 @@
-# process names are case-insensitive
-# you can use 'master' to indicate the master channel, or a list of process names to create a group
-# you can use 'mic' to control your mic input level (uses the default recording device)
-# you can use 'deej.unmapped' to control all apps that aren't bound to any slider (this ignores master, system, mic and device-targeting sessions)
-# windows only - you can use 'deej.current' to control the currently active app (whether full-screen or not)
-# windows only - you can use a device's full name, i.e. "Speakers (Realtek High Definition Audio)", to bind it. this works for both output and input devices
-# windows only - you can use 'system' to control the "system sounds" volume
-# important: slider indexes start at 0, regardless of which analog pins you're using!
+# --- Slider Mapping ---
+# Process names are case-insensitive.
+# Supported special targets: master, mic, system, deej.current, deej.unmapped.
+slider_count: 6
 slider_mapping:
   0: master
-  1:
-    - deej.current
-    - helldivers2.exe
+  1: deej.current
   2: ts3client_win64.exe
   3: discord.exe
   4:
@@ -18,30 +12,24 @@ slider_mapping:
     - youtube-music-desktop-app.exe
   5: mic
 
-# Set to true if your encoders feel backwards
+# --- General Options ---
 invert_sliders: false
+noise_reduction: default
 
-# Connection settings for the ESP32-S3
+# --- Connection Settings ---
 com_port: COM8
 baud_rate: 9600
 
-# Noise reduction for encoders (can be 'low', 'default', or 'high')
-noise_reduction: default
-
 # --- Bidirectional Sync Settings ---
-# Send current PC volumes and colors to the controller on startup
 send_on_startup: true
-# Continuously send volume changes from the PC to the controller
 sync_volumes: true
 
-# --- Controller-Specific Settings ---
-
-# Color mapping for each encoder's LED ring, from 0% to 100% volume.
-# Colors are sent as hex values.
+# --- Controller Lighting ---
+background_lighting: rgb
 color_mapping:
   0:
-    zero: '#ff0000' # Red
-    full: '#00ffff' # Green
+    zero: '#821c1c'
+    full: '#821c1c'
   1:
     zero: '#ff0000'
     full: '#00ff00'
@@ -58,12 +46,9 @@ color_mapping:
     zero: '#ff0000'
     full: '#00ff00'
 
-# Controls the ambient background lighting on the controller.
-# Can be a single hex color (e.g., '#0000ff') or "rgb" for a rainbow effect.
-background_lighting: "rgb"
-
-commands: 
-  1: "Set-AudioDevice -ID '{0.0.0.00000000}.{ec3dec42-b8f4-473c-978c-36386dcb25c9}'"   
-  2: "Set-AudioDevice -ID '{0.0.0.00000000}.{7daaefee-97e9-4bd8-95d1-136f2cbb406f}'"
-  3: "Set-AudioDevice -ID '{0.0.1.00000000}.{df7d5313-7314-4373-abef-45901ff26b62}'"
-  4: "Set-AudioDevice -ID '{0.0.1.00000000}.{eaead663-2795-4916-b530-3d2af318fbf7}'"
+# --- Commands (not edited in UI) ---
+commands:
+  "1": Set-AudioDevice -ID '{0.0.0.00000000}.{ec3dec42-b8f4-473c-978c-36386dcb25c9}'
+  "2": Set-AudioDevice -ID '{0.0.0.00000000}.{7daaefee-97e9-4bd8-95d1-136f2cbb406f}'
+  "3": Set-AudioDevice -ID '{0.0.1.00000000}.{df7d5313-7314-4373-abef-45901ff26b62}'
+  "4": Set-AudioDevice -ID '{0.0.1.00000000}.{eaead663-2795-4916-b530-3d2af318fbf7}'
