@@ -28,20 +28,20 @@ sync_volumes: true
 background_lighting: rgb
 color_mapping:
   0:
-    zero: '#821c1c'
-    full: '#821c1c'
+    zero: '#00ffff'
+    full: '#ff0000'
   1:
-    zero: '#ff0000'
-    full: '#00ff00'
+    zero: '#ff7b00'
+    full: '#ff7b00'
   2:
-    zero: '#ff0000'
-    full: '#00ff00'
+    zero: '#00ffee'
+    full: '#001eff'
   3:
-    zero: '#ff0000'
-    full: '#00ff00'
+    zero: '#5662f6'
+    full: '#5662f6'
   4:
-    zero: '#ff0000'
-    full: '#00ff00'
+    zero: '#ff0033'
+    full: '#ff0033'
   5:
     zero: '#ff0000'
     full: '#00ff00'

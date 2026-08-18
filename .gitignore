@@ -1,20 +1,71 @@
-venv/
-*.pyc
-*.db
-.DS_Store
-*.log
-.vscode
-*.lnk
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.cache/
+.clangd/
+compile_commands.json
+*.elf
+*.bin
+*.hex
+*.map
+
+# Arduino / PlatformIO subdirectories
+arduino/.pio/
+arduino/.cache/
+arduino/.clangd/
+arduino/compile_commands.json
+arduino/lib/
+arduino/test/
+arduino/include/
+include/
+lib/
+test/
+
+# IDE and Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Go build artifacts
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
 deej-dev
 deej-release
 releases/
-*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+ENV/
+
+# Deej runtime & user data
 logs/
+*.log
 preferences.yaml
-arduino/lib/
-arduino/test/
-arduino/.pio/
-arduino/.vscode/
-arduino/include/
-profiles
+profiles/
+*.db
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+*.lnk
