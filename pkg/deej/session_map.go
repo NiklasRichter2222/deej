@@ -353,6 +353,106 @@ func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
 	return total / float32(len(volumes)), true
 }
 
+// sliderMute reports the current mute state for all sessions mapped to a slider.
+func (m *sessionMap) sliderMute(sliderIdx int) (bool, bool) {
+	targets, ok := m.deej.config.SliderMapping.get(sliderIdx)
+	if !ok || len(targets) == 0 {
+		return false, false
+	}
+
+	preferredMutes := make([]bool, 0)
+	fallbackMutes := make([]bool, 0)
+	preferCurrent := false
+
+	for _, target := range targets {
+		trimmedTarget := strings.ToLower(strings.TrimSpace(target))
+		resolvedTargets := m.resolveTarget(target)
+
+		for _, resolvedTarget := range resolvedTargets {
+			sessions, ok := m.get(resolvedTarget)
+			if !ok {
+				continue
+			}
+
+			for _, session := range sessions {
+				muted := session.GetMute()
+				if trimmedTarget == specialTargetTransformPrefix+specialTargetCurrentWindow {
+					preferCurrent = true
+					preferredMutes = append(preferredMutes, muted)
+				} else {
+					fallbackMutes = append(fallbackMutes, muted)
+				}
+			}
+		}
+	}
+
+	mutes := fallbackMutes
+	if preferCurrent && len(preferredMutes) > 0 {
+		mutes = preferredMutes
+	}
+
+	if len(mutes) == 0 {
+		return false, false
+	}
+
+	for _, muted := range mutes {
+		if muted {
+			return true, true
+		}
+	}
+
+	return false, true
+}
+
+// ToggleSliderMute toggles the mute state for all sessions mapped to a slider.
+func (m *sessionMap) ToggleSliderMute(sliderIdx int) error {
+	targets, ok := m.deej.config.SliderMapping.get(sliderIdx)
+	if !ok || len(targets) == 0 {
+		m.logger.Debugw("ToggleSliderMute: no targets mapped to slider", "slider", sliderIdx)
+		return nil
+	}
+
+	currentMute, hasActive := m.sliderMute(sliderIdx)
+	targetMute := true
+	if hasActive && currentMute {
+		targetMute = false
+	}
+
+	m.logger.Infow("Toggling slider mute", "slider", sliderIdx, "from", currentMute, "to", targetMute)
+
+	adjustmentFailed := false
+	targetFound := false
+
+	for _, target := range targets {
+		resolvedTargets := m.resolveTarget(target)
+
+		for _, resolvedTarget := range resolvedTargets {
+			sessions, ok := m.get(resolvedTarget)
+			if !ok {
+				continue
+			}
+
+			targetFound = true
+			for _, session := range sessions {
+				if err := session.SetMute(targetMute); err != nil {
+					m.logger.Warnw("Failed to set target session mute", "session", session.Key(), "error", err)
+					adjustmentFailed = true
+				}
+			}
+		}
+	}
+
+	if !targetFound || adjustmentFailed {
+		m.refreshSessions(true)
+	}
+
+	if err := m.deej.serial.SendSliderMute(sliderIdx, targetMute); err != nil {
+		m.logger.Warnw("Failed to send slider mute update", "slider", sliderIdx, "error", err)
+	}
+
+	return nil
+}
+
 func (m *sessionMap) setupSliderVolumeSync() {
 	const syncInterval = 500 * time.Millisecond
 
@@ -393,11 +493,17 @@ func (m *sessionMap) syncAllSliderVolumes() {
 			if err := m.deej.serial.SendSliderDisplayValue(idx, volume); err != nil {
 				m.logger.Warnw("Failed to sync slider display", "slider", idx, "error", err)
 			}
-			continue
+		} else {
+			if err := m.deej.serial.SendSliderDisplayValue(idx, 0); err != nil {
+				m.logger.Warnw("Failed to sync slider display", "slider", idx, "error", err)
+			}
 		}
 
-		if err := m.deej.serial.SendSliderDisplayValue(idx, 0); err != nil {
-			m.logger.Warnw("Failed to sync slider display", "slider", idx, "error", err)
+		muted, ok := m.sliderMute(idx)
+		if ok {
+			if err := m.deej.serial.SendSliderMute(idx, muted); err != nil {
+				m.logger.Warnw("Failed to sync slider mute", "slider", idx, "error", err)
+			}
 		}
 	}
 }

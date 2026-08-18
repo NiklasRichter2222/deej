@@ -71,6 +71,7 @@ struct EncoderInfo {
   RotaryEncoder *encoder;
   long lastDetentPosition;
   bool isPressed;
+  bool isMuted;
   uint8_t lastButtonState;
   unsigned long lastDebounceTime;
   Color zeroColor;
@@ -82,6 +83,7 @@ struct EncoderInfo {
         ledOrder(order), ledOrderLength(orderLen) {
     lastDetentPosition = 0;
     isPressed = false;
+    isMuted = false;
     lastButtonState = HIGH;
     lastDebounceTime = 0;
     encoder = nullptr;
@@ -215,21 +217,23 @@ void loop() {
     }
   }
 
-  // Check Encoder Buttons
+  // Check Encoder Buttons (Mute Toggles)
   for (int i = 0; i < numEncoders; i++) {
     int reading = digitalRead(encoders[i].btn_pin);
     if (reading != encoders[i].lastButtonState &&
         millis() - encoders[i].lastDebounceTime > DEBOUNCE_DELAY) {
-      encoders[i].isPressed = (reading == LOW);
       encoders[i].lastDebounceTime = millis();
       encoders[i].lastButtonState = reading;
-      needsRender = true;
-      if (encoders[i].isPressed)
-        Serial.printf("O:%d\n", i);
+      if (reading == LOW) {
+        // Encoder knob clicked -> Send mute toggle command
+        encoders[i].isMuted = !encoders[i].isMuted;
+        Serial.printf("M:%d\n", i);
+        needsRender = true;
+      }
     }
   }
 
-  // Check Rubber Dome Buttons
+  // Check Rubber Dome Buttons (Rol-Rur -> O:7 to O:10)
   for (int i = 0; i < numButtons; i++) {
     int reading = digitalRead(buttons[i].pin);
     if (reading != buttons[i].lastState &&
@@ -239,7 +243,7 @@ void loop() {
       buttons[i].lastState = reading;
       needsRender = true;
       if (buttons[i].isPressed)
-        Serial.printf("O:%d\n", numEncoders + i);
+        Serial.printf("O:%d\n", 7 + i);
     }
   }
 
@@ -279,6 +283,17 @@ void processDeejSerial() {
           long newPos = round(percent * MAX_ENCODER_VALUE);
           encoders[idx].lastDetentPosition = newPos;
           encoders[idx].encoder->setPosition(newPos);
+          renderLEDs();
+        }
+      }
+    } else if (line.startsWith("M:")) {
+      int c1 = line.indexOf(':');
+      int c2 = line.indexOf(':', c1 + 1);
+      if (c1 != -1 && c2 != -1) {
+        int idx = line.substring(c1 + 1, c2).toInt();
+        int muted = line.substring(c2 + 1).toInt();
+        if (idx >= 0 && idx < numEncoders) {
+          encoders[idx].isMuted = (muted == 1);
           renderLEDs();
         }
       }
@@ -338,7 +353,7 @@ void renderLEDs() {
     float percent = (float)enc.lastDetentPosition / MAX_ENCODER_VALUE;
 
     Color activeColor;
-    if (enc.isPressed) {
+    if (enc.isMuted) {
       activeColor = COLOR_RED;
     } else {
       activeColor.r =
@@ -351,6 +366,11 @@ void renderLEDs() {
 
     // Calculate how many "LEDs worth" of volume we have (e.g., 9.2)
     float ledFill = percent * orderLength;
+    if (enc.isMuted && ledFill < 1.0) {
+      // When muted and volume is 0 or very low, light up at least 1 red LED
+      // so the user clearly sees that this channel is muted.
+      ledFill = 1.0;
+    }
     int fullLeds = (int)ledFill; // e.g., 9 fully lit LEDs
     float partialFraction =
         ledFill - fullLeds; // e.g., 0.2 brightness for the 10th LED

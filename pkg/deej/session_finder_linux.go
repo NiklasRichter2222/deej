@@ -5,9 +5,9 @@ package deej
 
 import (
 	"fmt"
-	"net"
 
 	"github.com/jfreymuth/pulse/proto"
+	wca "github.com/moutend/go-wca"
 	"go.uber.org/zap"
 )
 

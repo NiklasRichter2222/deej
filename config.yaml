@@ -48,7 +48,7 @@ color_mapping:
 
 # --- Commands (not edited in UI) ---
 commands:
-  "1": Set-AudioDevice -ID '{0.0.0.00000000}.{ec3dec42-b8f4-473c-978c-36386dcb25c9}'
-  "2": Set-AudioDevice -ID '{0.0.0.00000000}.{7daaefee-97e9-4bd8-95d1-136f2cbb406f}'
-  "3": Set-AudioDevice -ID '{0.0.1.00000000}.{df7d5313-7314-4373-abef-45901ff26b62}'
-  "4": Set-AudioDevice -ID '{0.0.1.00000000}.{eaead663-2795-4916-b530-3d2af318fbf7}'
+  "7": Set-AudioDevice -ID '{0.0.0.00000000}.{ec3dec42-b8f4-473c-978c-36386dcb25c9}'
+  "8": Set-AudioDevice -ID '{0.0.0.00000000}.{7daaefee-97e9-4bd8-95d1-136f2cbb406f}'
+  "9": Set-AudioDevice -ID '{0.0.1.00000000}.{df7d5313-7314-4373-abef-45901ff26b62}'
+  "10": Set-AudioDevice -ID '{0.0.1.00000000}.{eaead663-2795-4916-b530-3d2af318fbf7}'

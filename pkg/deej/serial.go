@@ -39,6 +39,9 @@ type SerialIO struct {
 	lastSentSliderPositions   map[int]float32
 	lastSentSliderPositionsMu sync.Mutex
 
+	lastSentSliderMutes   map[int]bool
+	lastSentSliderMutesMu sync.Mutex
+
 	// suppress incoming slider move events until this time. used to avoid
 	// echo/feedback loops when we send initial display values to the controller
 	suppressSliderEventsUntil   time.Time
@@ -66,6 +69,7 @@ func NewSerialIO(deej *Deej, logger *zap.SugaredLogger) (*SerialIO, error) {
 		conn:                    nil,
 		sliderMoveConsumers:     []chan SliderMoveEvent{},
 		lastSentSliderPositions: make(map[int]float32),
+		lastSentSliderMutes:     make(map[int]bool),
 	}
 
 	logger.Debug("Created serial i/o instance")
@@ -268,6 +272,10 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 		return
 	}
 
+	if sio.tryHandleMuteCommand(logger, sanitized) {
+		return
+	}
+
 	if sio.tryHandleCommand(logger, sanitized) {
 		return
 	}
@@ -355,6 +363,38 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 			}
 		}
 	}
+}
+
+func (sio *SerialIO) tryHandleMuteCommand(logger *zap.SugaredLogger, line string) bool {
+	if len(line) < 3 {
+		return false
+	}
+
+	if (line[0] != 'M' && line[0] != 'm') || line[1] != ':' {
+		return false
+	}
+
+	payload := strings.TrimSpace(line[2:])
+	if payload == "" {
+		if sio.deej.Verbose() {
+			logger.Debugw("Ignoring mute command with empty payload", "line", line)
+		}
+		return true
+	}
+
+	index, err := strconv.Atoi(payload)
+	if err != nil {
+		if sio.deej.Verbose() {
+			logger.Debugw("Ignoring mute command with non-numeric index", "payload", payload)
+		}
+		return true
+	}
+
+	if err := sio.deej.sessions.ToggleSliderMute(index); err != nil {
+		logger.Warnw("Failed to toggle slider mute", "slider", index, "error", err)
+	}
+
+	return true
 }
 
 func (sio *SerialIO) tryHandleCommand(logger *zap.SugaredLogger, line string) bool {
@@ -474,6 +514,13 @@ func (sio *SerialIO) sendInitialSliderVolumes(logger *zap.SugaredLogger) error {
 		if err := sio.SendSliderDisplayValue(idx, volume); err != nil {
 			return fmt.Errorf("send initial volume for slider %d: %w", idx, err)
 		}
+
+		muted, ok := sio.deej.sessions.sliderMute(idx)
+		if ok {
+			if err := sio.SendSliderMute(idx, muted); err != nil {
+				return fmt.Errorf("send initial mute for slider %d: %w", idx, err)
+			}
+		}
 	}
 
 	return nil
@@ -522,11 +569,49 @@ func (sio *SerialIO) SendSliderDisplayValue(sliderIdx int, percent float32) erro
 	return nil
 }
 
+// SendSliderMute sends a mute update for a slider, caching the last transmitted value.
+func (sio *SerialIO) SendSliderMute(sliderIdx int, muted bool) error {
+	if sio.conn == nil || !sio.connected {
+		return nil
+	}
+
+	sio.lastSentSliderMutesMu.Lock()
+	last, ok := sio.lastSentSliderMutes[sliderIdx]
+	sio.lastSentSliderMutesMu.Unlock()
+
+	if ok && last == muted {
+		return nil
+	}
+
+	mutedInt := 0
+	if muted {
+		mutedInt = 1
+	}
+
+	payload := fmt.Sprintf("M:%d:%d", sliderIdx, mutedInt)
+	if err := sio.writeSerialLine(payload); err != nil {
+		return err
+	}
+
+	sio.lastSentSliderMutesMu.Lock()
+	sio.lastSentSliderMutes[sliderIdx] = muted
+	sio.lastSentSliderMutesMu.Unlock()
+
+	if sio.deej.Verbose() {
+		sio.logger.Debugw("Sent slider mute update", "slider", sliderIdx, "muted", muted)
+	}
+
+	return nil
+}
+
 func (sio *SerialIO) resetSliderDisplayCache() {
 	sio.lastSentSliderPositionsMu.Lock()
-	defer sio.lastSentSliderPositionsMu.Unlock()
-
 	sio.lastSentSliderPositions = make(map[int]float32)
+	sio.lastSentSliderPositionsMu.Unlock()
+
+	sio.lastSentSliderMutesMu.Lock()
+	sio.lastSentSliderMutes = make(map[int]bool)
+	sio.lastSentSliderMutesMu.Unlock()
 }
 
 func (sio *SerialIO) writeSerialLine(payload string) error {
