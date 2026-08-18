@@ -57,18 +57,26 @@ type configUIStateResponse struct {
 	BgPresets       []configUIBackgroundOpt `json:"bgPresets"`
 }
 
+type configUIPageConfig struct {
+	ButtonColor    string                            `json:"buttonColor"`
+	ButtonOffColor string                            `json:"buttonOffColor"`
+	SliderMapping  map[string][]string               `json:"sliderMapping"`
+	ColorMapping   map[string]configUISliderColorMap `json:"colorMapping"`
+}
+
 type configUIConfig struct {
-	SliderCount        int                               `json:"sliderCount"`
-	SliderMapping      map[string][]string               `json:"sliderMapping"`
-	COMPort            string                            `json:"comPort"`
-	BaudRate           int                               `json:"baudRate"`
-	InvertSliders      bool                              `json:"invertSliders"`
-	NoiseReduction     string                            `json:"noiseReduction"`
-	SendOnStartup      bool                              `json:"sendOnStartup"`
-	SyncVolumes        bool                              `json:"syncVolumes"`
-	BackgroundLighting string                            `json:"backgroundLighting"`
-	ColorMapping       map[string]configUISliderColorMap `json:"colorMapping"`
-	Commands           interface{}                       `json:"commands,omitempty"`
+	SliderCount        int                `json:"sliderCount"`
+	ActivePage         string             `json:"activePage"`
+	Left               configUIPageConfig `json:"left"`
+	Right              configUIPageConfig `json:"right"`
+	COMPort            string             `json:"comPort"`
+	BaudRate           int                `json:"baudRate"`
+	InvertSliders      bool               `json:"invertSliders"`
+	NoiseReduction     string             `json:"noiseReduction"`
+	DefaultBrightness  float64            `json:"defaultBrightness"`
+	SendOnStartup      bool               `json:"sendOnStartup"`
+	SyncVolumes        bool               `json:"syncVolumes"`
+	BackgroundLighting string             `json:"backgroundLighting"`
 }
 
 type configUISliderColorMap struct {
@@ -305,47 +313,67 @@ func (s *configUIService) handleLoadProfile(w http.ResponseWriter, r *http.Reque
 func (s *configUIService) currentConfig() configUIConfig {
 	cfg := configUIConfig{
 		SliderCount:        s.deej.config.SliderCount,
-		SliderMapping:      map[string][]string{},
+		ActivePage:         s.deej.config.ActivePage,
 		COMPort:            s.deej.config.ConnectionInfo.COMPort,
 		BaudRate:           s.deej.config.ConnectionInfo.BaudRate,
 		InvertSliders:      s.deej.config.InvertSliders,
 		NoiseReduction:     s.deej.config.NoiseReductionLevel,
+		DefaultBrightness:  s.deej.config.DefaultBrightness,
 		SendOnStartup:      s.deej.config.SendOnStartup,
 		SyncVolumes:        s.deej.config.SyncVolumes,
 		BackgroundLighting: s.deej.config.BackgroundLighting,
-		ColorMapping:       map[string]configUISliderColorMap{},
-		Commands:           s.deej.config.userConfig.Get(configKeyCommands),
+		Left: configUIPageConfig{
+			ButtonColor:    s.deej.config.PageButtonLeftColor,
+			ButtonOffColor: s.deej.config.PageButtonLeftOffColor,
+			SliderMapping:  map[string][]string{},
+			ColorMapping:   map[string]configUISliderColorMap{},
+		},
+		Right: configUIPageConfig{
+			ButtonColor:    s.deej.config.PageButtonRightColor,
+			ButtonOffColor: s.deej.config.PageButtonRightOffColor,
+			SliderMapping:  map[string][]string{},
+			ColorMapping:   map[string]configUISliderColorMap{},
+		},
 	}
 
-	maxIndex := -1
-	s.deej.config.SliderMapping.iterate(func(sliderIdx int, targets []string) {
-		cleanTargets := make([]string, len(targets))
-		copy(cleanTargets, targets)
-		cfg.SliderMapping[strconv.Itoa(sliderIdx)] = cleanTargets
-		if sliderIdx > maxIndex {
-			maxIndex = sliderIdx
-		}
-	})
+	if s.deej.config.SliderMappingLeft != nil {
+		s.deej.config.SliderMappingLeft.iterate(func(sliderIdx int, targets []string) {
+			clean := make([]string, len(targets))
+			copy(clean, targets)
+			cfg.Left.SliderMapping[strconv.Itoa(sliderIdx)] = clean
+		})
+	}
+	if s.deej.config.SliderMappingRight != nil {
+		s.deej.config.SliderMappingRight.iterate(func(sliderIdx int, targets []string) {
+			clean := make([]string, len(targets))
+			copy(clean, targets)
+			cfg.Right.SliderMapping[strconv.Itoa(sliderIdx)] = clean
+		})
+	}
 
-	for idx, entry := range s.deej.config.ColorMapping {
+	for idx, entry := range s.deej.config.ColorMappingLeft {
 		mode := "gradient"
 		if strings.EqualFold(strings.TrimSpace(entry.Zero), strings.TrimSpace(entry.Full)) {
 			mode = "single"
 		}
-
-		cfg.ColorMapping[strconv.Itoa(idx)] = configUISliderColorMap{
+		cfg.Left.ColorMapping[strconv.Itoa(idx)] = configUISliderColorMap{
 			Mode: mode,
 			Zero: entry.Zero,
 			Full: entry.Full,
 		}
-		if idx > maxIndex {
-			maxIndex = idx
+	}
+	for idx, entry := range s.deej.config.ColorMappingRight {
+		mode := "gradient"
+		if strings.EqualFold(strings.TrimSpace(entry.Zero), strings.TrimSpace(entry.Full)) {
+			mode = "single"
+		}
+		cfg.Right.ColorMapping[strconv.Itoa(idx)] = configUISliderColorMap{
+			Mode: mode,
+			Zero: entry.Zero,
+			Full: entry.Full,
 		}
 	}
 
-	if cfg.SliderCount <= 0 {
-		cfg.SliderCount = maxIndex + 1
-	}
 	if cfg.SliderCount <= 0 {
 		cfg.SliderCount = defaultSliders
 	}
@@ -387,29 +415,42 @@ func saveConfigToPath(config configUIConfig, targetPath string) error {
 		sliderCount = configUIDefaultSliderCap
 	}
 
-	mapping := make(map[int][]string)
+	leftMapping := make(map[int][]string)
+	rightMapping := make(map[int][]string)
 	for idx := 0; idx < sliderCount; idx++ {
-		mapping[idx] = normalizeTargets(config.SliderMapping[strconv.Itoa(idx)])
+		key := strconv.Itoa(idx)
+		leftMapping[idx] = normalizeTargets(config.Left.SliderMapping[key])
+		rightMapping[idx] = normalizeTargets(config.Right.SliderMapping[key])
 	}
 
-	colorMapping := make(map[int]SliderColorConfig)
+	leftColorMapping := make(map[int]SliderColorConfig)
 	for idx := 0; idx < sliderCount; idx++ {
-		entry, ok := config.ColorMapping[strconv.Itoa(idx)]
-		if !ok {
-			continue
+		key := strconv.Itoa(idx)
+		if entry, ok := config.Left.ColorMapping[key]; ok {
+			zero := normalizeColor(entry.Zero)
+			full := normalizeColor(entry.Full)
+			if strings.EqualFold(entry.Mode, "single") {
+				full = zero
+			}
+			if isHexColor(zero) && isHexColor(full) {
+				leftColorMapping[idx] = SliderColorConfig{Zero: zero, Full: full}
+			}
 		}
+	}
 
-		zero := normalizeColor(entry.Zero)
-		full := normalizeColor(entry.Full)
-		if strings.EqualFold(entry.Mode, "single") {
-			full = zero
+	rightColorMapping := make(map[int]SliderColorConfig)
+	for idx := 0; idx < sliderCount; idx++ {
+		key := strconv.Itoa(idx)
+		if entry, ok := config.Right.ColorMapping[key]; ok {
+			zero := normalizeColor(entry.Zero)
+			full := normalizeColor(entry.Full)
+			if strings.EqualFold(entry.Mode, "single") {
+				full = zero
+			}
+			if isHexColor(zero) && isHexColor(full) {
+				rightColorMapping[idx] = SliderColorConfig{Zero: zero, Full: full}
+			}
 		}
-
-		if !isHexColor(zero) || !isHexColor(full) {
-			continue
-		}
-
-		colorMapping[idx] = SliderColorConfig{Zero: zero, Full: full}
 	}
 
 	backgroundLighting := strings.TrimSpace(config.BackgroundLighting)
@@ -421,11 +462,26 @@ func saveConfigToPath(config configUIConfig, targetPath string) error {
 	}
 
 	noiseReduction := strings.TrimSpace(strings.ToLower(config.NoiseReduction))
-	if noiseReduction == "" {
-		noiseReduction = "default"
-	}
 	if noiseReduction != "low" && noiseReduction != "default" && noiseReduction != "high" {
 		noiseReduction = "default"
+	}
+
+	leftBtnColor := normalizeColor(config.Left.ButtonColor)
+	if !isHexColor(leftBtnColor) {
+		leftBtnColor = "#ffffff"
+	}
+	leftBtnOffColor := normalizeColor(config.Left.ButtonOffColor)
+	if !isHexColor(leftBtnOffColor) {
+		leftBtnOffColor = "#000000"
+	}
+
+	rightBtnColor := normalizeColor(config.Right.ButtonColor)
+	if !isHexColor(rightBtnColor) {
+		rightBtnColor = "#ffffff"
+	}
+	rightBtnOffColor := normalizeColor(config.Right.ButtonOffColor)
+	if !isHexColor(rightBtnOffColor) {
+		rightBtnOffColor = "#000000"
 	}
 
 	buf := &bytes.Buffer{}
@@ -435,22 +491,57 @@ func saveConfigToPath(config configUIConfig, targetPath string) error {
 	fmt.Fprintf(buf, "slider_count: %d\n", sliderCount)
 	buf.WriteString("slider_mapping:\n")
 
+	// Left Page Mapping
+	buf.WriteString("  left:\n")
 	for idx := 0; idx < sliderCount; idx++ {
-		targets := mapping[idx]
+		targets := leftMapping[idx]
 		switch len(targets) {
 		case 0:
-			fmt.Fprintf(buf, "  %d: []\n", idx)
+			fmt.Fprintf(buf, "    %d: []\n", idx)
 		case 1:
-			fmt.Fprintf(buf, "  %d: %s\n", idx, yamlString(targets[0]))
+			fmt.Fprintf(buf, "    %d: %s\n", idx, yamlString(targets[0]))
 		default:
-			fmt.Fprintf(buf, "  %d:\n", idx)
+			fmt.Fprintf(buf, "    %d:\n", idx)
 			for _, target := range targets {
-				fmt.Fprintf(buf, "    - %s\n", yamlString(target))
+				fmt.Fprintf(buf, "      - %s\n", yamlString(target))
 			}
 		}
 	}
 
+	// Right Page Mapping
+	buf.WriteString("  right:\n")
+	for idx := 0; idx < sliderCount; idx++ {
+		targets := rightMapping[idx]
+		switch len(targets) {
+		case 0:
+			fmt.Fprintf(buf, "    %d: []\n", idx)
+		case 1:
+			fmt.Fprintf(buf, "    %d: %s\n", idx, yamlString(targets[0]))
+		default:
+			fmt.Fprintf(buf, "    %d:\n", idx)
+			for _, target := range targets {
+				fmt.Fprintf(buf, "      - %s\n", yamlString(target))
+			}
+		}
+	}
+
+	defaultBrightness := config.DefaultBrightness
+	if defaultBrightness > 1.0 {
+		defaultBrightness = defaultBrightness / 100.0
+	}
+	if defaultBrightness < 0.0 {
+		defaultBrightness = 0.0
+	} else if defaultBrightness > 1.0 {
+		defaultBrightness = 1.0
+	}
+	if defaultBrightness == 0.0 && config.DefaultBrightness == 0.0 {
+		// keep 0.0 if explicitly 0
+	} else if defaultBrightness == 0.0 {
+		defaultBrightness = 0.15
+	}
+
 	buf.WriteString("\n# --- General Options ---\n")
+	fmt.Fprintf(buf, "default_brightness: %.2f\n", defaultBrightness)
 	fmt.Fprintf(buf, "invert_sliders: %t\n", config.InvertSliders)
 	fmt.Fprintf(buf, "noise_reduction: %s\n", yamlString(noiseReduction))
 
@@ -469,28 +560,33 @@ func saveConfigToPath(config configUIConfig, targetPath string) error {
 	buf.WriteString("\n# --- Controller Lighting ---\n")
 	fmt.Fprintf(buf, "background_lighting: %s\n", yamlString(backgroundLighting))
 	buf.WriteString("color_mapping:\n")
-	if len(colorMapping) == 0 {
-		buf.WriteString("  {}\n")
-	} else {
-		indices := make([]int, 0, len(colorMapping))
-		for idx := range colorMapping {
-			indices = append(indices, idx)
+
+	// Left Page Colors
+	buf.WriteString("  left:\n")
+	fmt.Fprintf(buf, "    color: %s\n", yamlString(leftBtnColor))
+	fmt.Fprintf(buf, "    offcolor: %s\n", yamlString(leftBtnOffColor))
+	for idx := 0; idx < sliderCount; idx++ {
+		entry, ok := leftColorMapping[idx]
+		if !ok {
+			entry = SliderColorConfig{Zero: "#ff0000", Full: "#00ff00"}
 		}
-		sort.Ints(indices)
-		for _, idx := range indices {
-			entry := colorMapping[idx]
-			fmt.Fprintf(buf, "  %d:\n", idx)
-			fmt.Fprintf(buf, "    zero: %s\n", yamlString(entry.Zero))
-			fmt.Fprintf(buf, "    full: %s\n", yamlString(entry.Full))
-		}
+		fmt.Fprintf(buf, "    %d:\n", idx)
+		fmt.Fprintf(buf, "      zero: %s\n", yamlString(entry.Zero))
+		fmt.Fprintf(buf, "      full: %s\n", yamlString(entry.Full))
 	}
 
-	if config.Commands != nil {
-		buf.WriteString("\n# --- Commands (not edited in UI) ---\n")
-		commandsDoc, err := yaml.Marshal(map[string]interface{}{configKeyCommands: config.Commands})
-		if err == nil {
-			buf.Write(commandsDoc)
+	// Right Page Colors
+	buf.WriteString("  right:\n")
+	fmt.Fprintf(buf, "    color: %s\n", yamlString(rightBtnColor))
+	fmt.Fprintf(buf, "    offcolor: %s\n", yamlString(rightBtnOffColor))
+	for idx := 0; idx < sliderCount; idx++ {
+		entry, ok := rightColorMapping[idx]
+		if !ok {
+			entry = SliderColorConfig{Zero: "#ff0000", Full: "#00ff00"}
 		}
+		fmt.Fprintf(buf, "    %d:\n", idx)
+		fmt.Fprintf(buf, "      zero: %s\n", yamlString(entry.Zero))
+		fmt.Fprintf(buf, "      full: %s\n", yamlString(entry.Full))
 	}
 
 	return ioutil.WriteFile(targetPath, buf.Bytes(), 0644)

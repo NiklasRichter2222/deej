@@ -122,6 +122,14 @@ func (d *Deej) SetVersion(version string) {
 	d.version = version
 }
 
+// SetActivePage switches the active configuration page (left/right) and refreshes audio sessions
+func (d *Deej) SetActivePage(page string) {
+	d.config.SetActivePage(page)
+	if d.sessions != nil {
+		d.sessions.SetActivePage(d.config.ActivePage)
+	}
+}
+
 // Verbose returns a boolean indicating whether deej is running in verbose mode
 func (d *Deej) Verbose() bool {
 	return d.verbose

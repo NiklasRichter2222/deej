@@ -125,6 +125,10 @@ func (sio *SerialIO) Start() error {
 	sio.connected = true
 	sio.resetSliderDisplayCache()
 
+	if sio.deej.sessions != nil {
+		sio.deej.sessions.refreshSessions(true)
+	}
+
 	if err := sio.sendLightingConfiguration(namedLogger); err != nil {
 		namedLogger.Warnw("Failed to send lighting configuration", "error", err)
 	}
@@ -276,7 +280,7 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 		return
 	}
 
-	if sio.tryHandleCommand(logger, sanitized) {
+	if sio.tryHandlePageCommand(logger, sanitized) {
 		return
 	}
 
@@ -397,33 +401,26 @@ func (sio *SerialIO) tryHandleMuteCommand(logger *zap.SugaredLogger, line string
 	return true
 }
 
-func (sio *SerialIO) tryHandleCommand(logger *zap.SugaredLogger, line string) bool {
+func (sio *SerialIO) tryHandlePageCommand(logger *zap.SugaredLogger, line string) bool {
 	if len(line) < 3 {
 		return false
 	}
 
-	if (line[0] != 'O' && line[0] != 'o') || line[1] != ':' {
+	if (line[0] != 'P' && line[0] != 'p') || line[1] != ':' {
 		return false
 	}
 
 	payload := strings.TrimSpace(line[2:])
-	if payload == "" {
-		if sio.deej.Verbose() {
-			logger.Debugw("Ignoring command with empty payload", "line", line)
-		}
-		return true
+	page := "left"
+	if payload == "1" || strings.EqualFold(payload, "right") || strings.EqualFold(payload, "r") {
+		page = "right"
 	}
 
-	index, err := strconv.Atoi(payload)
-	if err != nil {
-		if sio.deej.Verbose() {
-			logger.Debugw("Ignoring command with non-numeric index", "payload", payload)
-		}
-		return true
+	if sio.deej.Verbose() {
+		logger.Debugw("Received page switch from controller", "payload", payload, "page", page)
 	}
 
-	sio.deej.RunConfiguredCommand(index)
-
+	sio.deej.SetActivePage(page)
 	return true
 }
 
@@ -436,6 +433,9 @@ func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error 
 		return errors.New("serial: connection not established")
 	}
 
+	// Send default brightness
+	_ = sio.writeSerialLine(fmt.Sprintf("BR:%.2f", sio.deej.config.DefaultBrightness))
+
 	background := strings.TrimSpace(sio.deej.config.BackgroundLighting)
 	if background != "" {
 		if err := sio.writeSerialLine(fmt.Sprintf("B:%s", background)); err != nil {
@@ -447,32 +447,64 @@ func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error 
 		}
 	}
 
-	if len(sio.deej.config.ColorMapping) == 0 {
-		return nil
+	// Send page button colors
+	leftBtnColor := sio.deej.config.PageButtonLeftColor
+	if leftBtnColor == "" {
+		leftBtnColor = "#ffffff"
+	}
+	leftBtnOffColor := sio.deej.config.PageButtonLeftOffColor
+	if leftBtnOffColor == "" {
+		leftBtnOffColor = "#000000"
 	}
 
-	indices := make([]int, 0, len(sio.deej.config.ColorMapping))
-	for idx := range sio.deej.config.ColorMapping {
-		indices = append(indices, idx)
+	rightBtnColor := sio.deej.config.PageButtonRightColor
+	if rightBtnColor == "" {
+		rightBtnColor = "#ffffff"
 	}
-	sort.Ints(indices)
+	rightBtnOffColor := sio.deej.config.PageButtonRightOffColor
+	if rightBtnOffColor == "" {
+		rightBtnOffColor = "#000000"
+	}
 
-	for _, idx := range indices {
-		entry := sio.deej.config.ColorMapping[idx]
+	_ = sio.writeSerialLine(fmt.Sprintf("CP:0:%s:%s", leftBtnColor, leftBtnOffColor))
+	_ = sio.writeSerialLine(fmt.Sprintf("CP:1:%s:%s", rightBtnColor, rightBtnOffColor))
+
+	// Send Left page slider colors
+	leftIndices := make([]int, 0, len(sio.deej.config.ColorMappingLeft))
+	for idx := range sio.deej.config.ColorMappingLeft {
+		leftIndices = append(leftIndices, idx)
+	}
+	sort.Ints(leftIndices)
+	for _, idx := range leftIndices {
+		entry := sio.deej.config.ColorMappingLeft[idx]
 		zero := strings.TrimSpace(entry.Zero)
 		full := strings.TrimSpace(entry.Full)
-		if zero == "" || full == "" {
-			continue
-		}
-
-		if err := sio.writeSerialLine(fmt.Sprintf("C:%d:%s:%s", idx, zero, full)); err != nil {
-			return fmt.Errorf("send color mapping for slider %d: %w", idx, err)
-		}
-
-		if sio.deej.Verbose() {
-			logger.Debugw("Sent color mapping", "slider", idx, "zero", zero, "full", full)
+		if zero != "" && full != "" {
+			_ = sio.writeSerialLine(fmt.Sprintf("C:0:%d:%s:%s", idx, zero, full))
 		}
 	}
+
+	// Send Right page slider colors
+	rightIndices := make([]int, 0, len(sio.deej.config.ColorMappingRight))
+	for idx := range sio.deej.config.ColorMappingRight {
+		rightIndices = append(rightIndices, idx)
+	}
+	sort.Ints(rightIndices)
+	for _, idx := range rightIndices {
+		entry := sio.deej.config.ColorMappingRight[idx]
+		zero := strings.TrimSpace(entry.Zero)
+		full := strings.TrimSpace(entry.Full)
+		if zero != "" && full != "" {
+			_ = sio.writeSerialLine(fmt.Sprintf("C:1:%d:%s:%s", idx, zero, full))
+		}
+	}
+
+	// Send active page (0 = left, 1 = right)
+	activePageNum := 0
+	if sio.deej.config.ActivePage == "right" {
+		activePageNum = 1
+	}
+	_ = sio.writeSerialLine(fmt.Sprintf("P:%d", activePageNum))
 
 	return nil
 }

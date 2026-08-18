@@ -25,14 +25,13 @@ type SliderColorConfig struct {
 	Full string `mapstructure:"full"`
 }
 
-type CommandSpec struct {
-	Args  []string
-	Shell bool
-}
-
 type CanonicalConfig struct {
-	SliderMapping *sliderMap
-	SliderCount   int
+	SliderMappingLeft  *sliderMap
+	SliderMappingRight *sliderMap
+	SliderMapping      *sliderMap // points to current active page slider map
+	SliderCount        int
+
+	ActivePage string // "left" or "right"
 
 	ConnectionInfo struct {
 		COMPort  string
@@ -43,11 +42,18 @@ type CanonicalConfig struct {
 
 	NoiseReductionLevel string
 
+	DefaultBrightness  float64
 	SendOnStartup      bool
 	SyncVolumes        bool
-	ColorMapping       map[int]SliderColorConfig
+	ColorMappingLeft   map[int]SliderColorConfig
+	ColorMappingRight  map[int]SliderColorConfig
+	ColorMapping       map[int]SliderColorConfig // points to current active page color map
 	BackgroundLighting string
-	Commands           map[int]CommandSpec
+
+	PageButtonLeftColor     string
+	PageButtonLeftOffColor  string
+	PageButtonRightColor    string
+	PageButtonRightOffColor string
 
 	logger             *zap.SugaredLogger
 	notifier           Notifier
@@ -79,18 +85,17 @@ const (
 	configKeyCOMPort             = "com_port"
 	configKeyBaudRate            = "baud_rate"
 	configKeyNoiseReductionLevel = "noise_reduction"
+	configKeyDefaultBrightness   = "default_brightness"
 	configKeySendOnStartup       = "send_on_startup"
 	configKeySyncVolumes         = "sync_volumes"
 	configKeyColorMapping        = "color_mapping"
 	configKeyBackgroundLighting  = "background_lighting"
-	configKeyCommands            = "commands"
 
 	defaultCOMPort  = "COM4"
 	defaultBaudRate = 9600
-	defaultSliders  = 5
+	defaultSliders  = 6
 )
 
-// has to be defined as a non-constant because we're using path.Join
 var internalConfigPath = path.Join(".", logDirectory)
 
 var defaultSliderMapping = func() *sliderMap {
@@ -105,28 +110,33 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	logger = logger.Named("config")
 
 	cc := &CanonicalConfig{
-		logger:             logger,
-		notifier:           notifier,
-		reloadConsumers:    []chan bool{},
-		stopWatcherChannel: make(chan bool),
+		logger:                  logger,
+		notifier:                notifier,
+		ActivePage:              "left",
+		DefaultBrightness:       0.15,
+		PageButtonLeftColor:     "#ffffff",
+		PageButtonLeftOffColor:  "#000000",
+		PageButtonRightColor:    "#ffffff",
+		PageButtonRightOffColor: "#000000",
+		reloadConsumers:         []chan bool{},
+		stopWatcherChannel:      make(chan bool),
 	}
 
-	// distinguish between the user-provided config (config.yaml) and the internal config (logs/preferences.yaml)
 	userConfig := viper.New()
 	userConfig.SetConfigName(userConfigName)
 	userConfig.SetConfigType(configType)
 	userConfig.AddConfigPath(userConfigPath)
 
-	userConfig.SetDefault(configKeySliderMapping, map[string][]string{})
+	userConfig.SetDefault(configKeySliderMapping, map[string]interface{}{})
 	userConfig.SetDefault(configKeySliderCount, 0)
 	userConfig.SetDefault(configKeyInvertSliders, false)
 	userConfig.SetDefault(configKeyCOMPort, defaultCOMPort)
 	userConfig.SetDefault(configKeyBaudRate, defaultBaudRate)
+	userConfig.SetDefault(configKeyDefaultBrightness, 0.15)
 	userConfig.SetDefault(configKeySendOnStartup, false)
 	userConfig.SetDefault(configKeySyncVolumes, false)
-	userConfig.SetDefault(configKeyColorMapping, map[string]map[string]string{})
+	userConfig.SetDefault(configKeyColorMapping, map[string]interface{}{})
 	userConfig.SetDefault(configKeyBackgroundLighting, "")
-	userConfig.SetDefault(configKeyCommands, map[string]interface{}{})
 
 	internalConfig := viper.New()
 	internalConfig.SetConfigName(internalConfigName)
@@ -145,53 +155,34 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 func (cc *CanonicalConfig) Load() error {
 	cc.logger.Debugw("Loading config", "path", userConfigFilepath)
 
-	// make sure it exists
 	if !util.FileExists(userConfigFilepath) {
 		cc.logger.Warnw("Config file not found", "path", userConfigFilepath)
-		cc.notifier.Notify("Can't find configuration!",
-			fmt.Sprintf("%s must be in the same directory as deej. Please re-launch", userConfigFilepath))
-
-		return fmt.Errorf("config file doesn't exist: %s", userConfigFilepath)
+		return fmt.Errorf("config file not found: %s", userConfigFilepath)
 	}
 
-	// load the user config
 	if err := cc.userConfig.ReadInConfig(); err != nil {
-		cc.logger.Warnw("Viper failed to read user config", "error", err)
+		cc.logger.Errorw("Failed to read user config file", "error", err)
+		return fmt.Errorf("read user config file: %w", err)
+	}
 
-		// if the error is yaml-format-related, show a sensible error. otherwise, show 'em to the logs
-		if strings.Contains(err.Error(), "yaml:") {
-			cc.notifier.Notify("Invalid configuration!",
-				fmt.Sprintf("Please make sure %s is in a valid YAML format.", userConfigFilepath))
-		} else {
-			cc.notifier.Notify("Error loading configuration!", "Please check deej's logs for more details.")
+	if util.FileExists(path.Join(internalConfigPath, internalConfigFilepath)) {
+		if err := cc.internalConfig.ReadInConfig(); err != nil {
+			cc.logger.Errorw("Failed to read internal config file", "error", err)
+			return fmt.Errorf("read internal config file: %w", err)
 		}
-
-		return fmt.Errorf("read user config: %w", err)
 	}
 
-	// load the internal config - this doesn't have to exist, so it can error
-	if err := cc.internalConfig.ReadInConfig(); err != nil {
-		cc.logger.Debugw("Viper failed to read internal config", "error", err, "reminder", "this is fine")
-	}
-
-	// canonize the configuration with viper's helpers
 	if err := cc.populateFromVipers(); err != nil {
-		cc.logger.Warnw("Failed to populate config fields", "error", err)
+		cc.logger.Errorw("Failed to populate config fields", "error", err)
 		return fmt.Errorf("populate config fields: %w", err)
 	}
 
-	cc.logger.Info("Loaded config successfully")
-	cc.logger.Infow("Config values",
-		"sliderMapping", cc.SliderMapping,
-		"connectionInfo", cc.ConnectionInfo,
-		"invertSliders", cc.InvertSliders,
-		"sliderCount", cc.SliderCount)
 	cc.captureConfigFingerprint()
+	cc.logger.Info("Loaded config successfully")
 
 	return nil
 }
 
-// SubscribeToChanges allows external components to receive updates when the config is reloaded
 func (cc *CanonicalConfig) SubscribeToChanges() chan bool {
 	c := make(chan bool)
 	cc.reloadConsumers = append(cc.reloadConsumers, c)
@@ -199,78 +190,68 @@ func (cc *CanonicalConfig) SubscribeToChanges() chan bool {
 	return c
 }
 
-// WatchConfigFileChanges starts watching for configuration file changes
-// and attempts reloading the config when they happen
 func (cc *CanonicalConfig) WatchConfigFileChanges() {
 	cc.logger.Debugw("Starting to watch user config file for changes", "path", userConfigFilepath)
-
-	const (
-		minTimeBetweenReloadAttempts = time.Millisecond * 500
-		delayBetweenEventAndReload   = time.Millisecond * 50
-	)
-
-	lastAttemptedReload := time.Now()
-
-	// establish watch using viper as opposed to doing it ourselves, though our internal cooldown is still required
 	cc.userConfig.WatchConfig()
+
+	const debounceDuration = 50 * time.Millisecond
+	var debounceTimer *time.Timer
+
 	cc.userConfig.OnConfigChange(func(event fsnotify.Event) {
-
-		// when we get a write event...
-		if event.Op&fsnotify.Write == fsnotify.Write {
-
-			now := time.Now()
-
-			// ... check if it's not a duplicate (many editors will write to a file twice)
-			if lastAttemptedReload.Add(minTimeBetweenReloadAttempts).Before(now) {
-
-				// and attempt reload if appropriate
-				cc.logger.Debugw("Config file modified, attempting reload", "event", event)
-
-				// wait a bit to let the editor actually flush the new file contents to disk
-				<-time.After(delayBetweenEventAndReload)
-
-				beforeFingerprint := cc.currentConfigFingerprint()
-				if err := cc.Load(); err != nil {
-					cc.logger.Warnw("Failed to reload config file", "error", err)
-				} else {
-					if !cc.configChangedSince(beforeFingerprint) {
-						cc.logger.Debug("Config reload produced no changes, suppressing duplicate notification")
-					} else {
-						cc.logger.Info("Reloaded config successfully")
-						cc.notifier.Notify("Configuration reloaded!", "Your changes have been applied.")
-
-						cc.onConfigReloaded()
-					}
-				}
-
-				// don't forget to update the time
-				lastAttemptedReload = now
-			}
+		if debounceTimer != nil {
+			debounceTimer.Stop()
 		}
+
+		debounceTimer = time.AfterFunc(debounceDuration, func() {
+			cc.logger.Debugw("Config file change detected", "event", event.Op.String())
+
+			if !cc.configChangedSince(cc.currentConfigFingerprint()) {
+				cc.logger.Debug("Config file change event was a false alarm, ignoring")
+				return
+			}
+
+			cc.logger.Info("Config file changed, reloading")
+
+			if err := cc.Load(); err != nil {
+				cc.logger.Warnw("Failed to reload config file", "error", err)
+				cc.notifier.Notify("Error reloading config!", "Please check deej.log for details.")
+				return
+			}
+
+			cc.onConfigReloaded()
+		})
 	})
 
-	// wait till they stop us
 	<-cc.stopWatcherChannel
 	cc.logger.Debug("Stopping user config file watcher")
 	cc.userConfig.OnConfigChange(nil)
 }
 
-// StopWatchingConfigFile signals our filesystem watcher to stop
 func (cc *CanonicalConfig) StopWatchingConfigFile() {
 	cc.stopWatcherChannel <- true
 }
 
+func (cc *CanonicalConfig) SetActivePage(page string) {
+	page = strings.ToLower(strings.TrimSpace(page))
+	if page != "right" {
+		page = "left"
+	}
+	cc.ActivePage = page
+	if page == "right" {
+		cc.SliderMapping = cc.SliderMappingRight
+		cc.ColorMapping = cc.ColorMappingRight
+	} else {
+		cc.SliderMapping = cc.SliderMappingLeft
+		cc.ColorMapping = cc.ColorMappingLeft
+	}
+}
+
 func (cc *CanonicalConfig) populateFromVipers() error {
+	leftSliderMap, rightSliderMap := cc.parseSliderMappings()
+	cc.SliderMappingLeft = leftSliderMap
+	cc.SliderMappingRight = rightSliderMap
 
-	// merge the slider mappings from the user and internal configs
-	cc.SliderMapping = sliderMapFromConfigs(
-		cc.userConfig.GetStringMapStringSlice(configKeySliderMapping),
-		cc.internalConfig.GetStringMapStringSlice(configKeySliderMapping),
-	)
-
-	// get the rest of the config fields - viper saves us a lot of effort here
 	cc.ConnectionInfo.COMPort = cc.userConfig.GetString(configKeyCOMPort)
-
 	cc.ConnectionInfo.BaudRate = cc.userConfig.GetInt(configKeyBaudRate)
 	if cc.ConnectionInfo.BaudRate <= 0 {
 		cc.logger.Warnw("Invalid baud rate specified, using default value",
@@ -285,28 +266,179 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 	cc.NoiseReductionLevel = cc.userConfig.GetString(configKeyNoiseReductionLevel)
 	cc.SendOnStartup = cc.userConfig.GetBool(configKeySendOnStartup)
 	cc.SyncVolumes = cc.userConfig.GetBool(configKeySyncVolumes)
-	cc.ColorMapping = cc.parseColorMapping()
+
+	rawBrightness := cc.userConfig.GetFloat64(configKeyDefaultBrightness)
+	if rawBrightness > 1.0 {
+		rawBrightness = rawBrightness / 100.0
+	}
+	if rawBrightness < 0.0 {
+		rawBrightness = 0.0
+	} else if rawBrightness > 1.0 {
+		rawBrightness = 1.0
+	}
+	if !cc.userConfig.IsSet(configKeyDefaultBrightness) {
+		rawBrightness = 0.15
+	}
+	cc.DefaultBrightness = rawBrightness
+
+	cLeft, cRight, btnLeft, btnLeftOff, btnRight, btnRightOff := cc.parseColorMappings()
+	cc.ColorMappingLeft = cLeft
+	cc.ColorMappingRight = cRight
+	cc.PageButtonLeftColor = btnLeft
+	cc.PageButtonLeftOffColor = btnLeftOff
+	cc.PageButtonRightColor = btnRight
+	cc.PageButtonRightOffColor = btnRightOff
+
 	cc.SliderCount = cc.userConfig.GetInt(configKeySliderCount)
 	if cc.SliderCount <= 0 {
 		cc.SliderCount = cc.inferSliderCount()
 	}
 	cc.BackgroundLighting = strings.TrimSpace(cc.userConfig.GetString(configKeyBackgroundLighting))
-	cc.Commands = cc.parseCommands()
+
+	cc.SetActivePage(cc.ActivePage)
 
 	cc.logger.Debug("Populated config fields from vipers")
-
 	return nil
+}
+
+func (cc *CanonicalConfig) parseSliderMappings() (*sliderMap, *sliderMap) {
+	userRaw := cc.userConfig.GetStringMap(configKeySliderMapping)
+	_, hasLeft := userRaw["left"]
+	_, hasRight := userRaw["right"]
+
+	internalRaw := cc.internalConfig.GetStringMap(configKeySliderMapping)
+	_, intHasLeft := internalRaw["left"]
+	_, intHasRight := internalRaw["right"]
+
+	var userLeft, userRight map[string][]string
+	var intLeft, intRight map[string][]string
+
+	if hasLeft || hasRight {
+		userLeft = cc.userConfig.GetStringMapStringSlice(configKeySliderMapping + ".left")
+		userRight = cc.userConfig.GetStringMapStringSlice(configKeySliderMapping + ".right")
+	} else {
+		flat := cc.userConfig.GetStringMapStringSlice(configKeySliderMapping)
+		userLeft = flat
+		userRight = flat
+	}
+
+	if intHasLeft || intHasRight {
+		intLeft = cc.internalConfig.GetStringMapStringSlice(configKeySliderMapping + ".left")
+		intRight = cc.internalConfig.GetStringMapStringSlice(configKeySliderMapping + ".right")
+	} else {
+		flat := cc.internalConfig.GetStringMapStringSlice(configKeySliderMapping)
+		intLeft = flat
+		intRight = flat
+	}
+
+	leftMap := sliderMapFromConfigs(userLeft, intLeft)
+	rightMap := sliderMapFromConfigs(userRight, intRight)
+
+	return leftMap, rightMap
+}
+
+func (cc *CanonicalConfig) parseColorMappings() (map[int]SliderColorConfig, map[int]SliderColorConfig, string, string, string, string) {
+	leftResult := make(map[int]SliderColorConfig)
+	rightResult := make(map[int]SliderColorConfig)
+
+	leftColor := "#ffffff"
+	leftOffColor := "#000000"
+	rightColor := "#ffffff"
+	rightOffColor := "#000000"
+
+	raw := cc.userConfig.GetStringMap(configKeyColorMapping)
+	_, hasLeft := raw["left"]
+	_, hasRight := raw["right"]
+
+	if hasLeft || hasRight {
+		if hasLeft {
+			if lColor := cc.userConfig.GetString(configKeyColorMapping + ".left.color"); lColor != "" {
+				leftColor = lColor
+			}
+			if lOff := cc.userConfig.GetString(configKeyColorMapping + ".left.offcolor"); lOff != "" {
+				leftOffColor = lOff
+			}
+			leftRaw := make(map[string]SliderColorConfig)
+			_ = cc.userConfig.UnmarshalKey(configKeyColorMapping+".left", &leftRaw)
+			for key, entry := range leftRaw {
+				if key == "color" || key == "offcolor" {
+					continue
+				}
+				if entry.Zero == "" && entry.Full == "" {
+					continue
+				}
+				idx, err := strconv.Atoi(strings.TrimSpace(key))
+				if err != nil {
+					continue
+				}
+				leftResult[idx] = SliderColorConfig{Zero: strings.TrimSpace(entry.Zero), Full: strings.TrimSpace(entry.Full)}
+			}
+		}
+		if hasRight {
+			if rColor := cc.userConfig.GetString(configKeyColorMapping + ".right.color"); rColor != "" {
+				rightColor = rColor
+			}
+			if rOff := cc.userConfig.GetString(configKeyColorMapping + ".right.offcolor"); rOff != "" {
+				rightOffColor = rOff
+			}
+			rightRaw := make(map[string]SliderColorConfig)
+			_ = cc.userConfig.UnmarshalKey(configKeyColorMapping+".right", &rightRaw)
+			for key, entry := range rightRaw {
+				if key == "color" || key == "offcolor" {
+					continue
+				}
+				if entry.Zero == "" && entry.Full == "" {
+					continue
+				}
+				idx, err := strconv.Atoi(strings.TrimSpace(key))
+				if err != nil {
+					continue
+				}
+				rightResult[idx] = SliderColorConfig{Zero: strings.TrimSpace(entry.Zero), Full: strings.TrimSpace(entry.Full)}
+			}
+		}
+	} else {
+		flatRaw := make(map[string]SliderColorConfig)
+		_ = cc.userConfig.UnmarshalKey(configKeyColorMapping, &flatRaw)
+		for key, entry := range flatRaw {
+			if entry.Zero == "" && entry.Full == "" {
+				continue
+			}
+			idx, err := strconv.Atoi(strings.TrimSpace(key))
+			if err != nil {
+				continue
+			}
+			leftResult[idx] = SliderColorConfig{Zero: strings.TrimSpace(entry.Zero), Full: strings.TrimSpace(entry.Full)}
+			rightResult[idx] = SliderColorConfig{Zero: strings.TrimSpace(entry.Zero), Full: strings.TrimSpace(entry.Full)}
+		}
+	}
+
+	return leftResult, rightResult, leftColor, leftOffColor, rightColor, rightOffColor
 }
 
 func (cc *CanonicalConfig) inferSliderCount() int {
 	maxSliderIdx := -1
-	cc.SliderMapping.iterate(func(sliderIdx int, _ []string) {
+	if cc.SliderMappingLeft != nil {
+		cc.SliderMappingLeft.iterate(func(sliderIdx int, _ []string) {
+			if sliderIdx > maxSliderIdx {
+				maxSliderIdx = sliderIdx
+			}
+		})
+	}
+	if cc.SliderMappingRight != nil {
+		cc.SliderMappingRight.iterate(func(sliderIdx int, _ []string) {
+			if sliderIdx > maxSliderIdx {
+				maxSliderIdx = sliderIdx
+			}
+		})
+	}
+
+	for sliderIdx := range cc.ColorMappingLeft {
 		if sliderIdx > maxSliderIdx {
 			maxSliderIdx = sliderIdx
 		}
-	})
-
-	for sliderIdx := range cc.ColorMapping {
+	}
+	for sliderIdx := range cc.ColorMappingRight {
 		if sliderIdx > maxSliderIdx {
 			maxSliderIdx = sliderIdx
 		}
@@ -325,176 +457,6 @@ func (cc *CanonicalConfig) onConfigReloaded() {
 	for _, consumer := range cc.reloadConsumers {
 		consumer <- true
 	}
-}
-
-func (cc *CanonicalConfig) parseColorMapping() map[int]SliderColorConfig {
-	result := make(map[int]SliderColorConfig)
-
-	raw := make(map[string]SliderColorConfig)
-	if err := cc.userConfig.UnmarshalKey(configKeyColorMapping, &raw); err != nil {
-		cc.logger.Warnw("Failed to parse color mapping from config", "error", err)
-		return result
-	}
-
-	for key, entry := range raw {
-		if entry.Zero == "" && entry.Full == "" {
-			continue
-		}
-
-		sliderIdx, err := strconv.Atoi(strings.TrimSpace(key))
-		if err != nil {
-			cc.logger.Warnw("Ignoring color mapping entry with non-numeric key", "key", key)
-			continue
-		}
-
-		zero := strings.TrimSpace(entry.Zero)
-		full := strings.TrimSpace(entry.Full)
-		if zero == "" || full == "" {
-			cc.logger.Warnw("Ignoring color mapping entry with missing colors", "key", key)
-			continue
-		}
-
-		result[sliderIdx] = SliderColorConfig{Zero: zero, Full: full}
-	}
-
-	return result
-}
-
-func (cc *CanonicalConfig) parseCommands() map[int]CommandSpec {
-	result := make(map[int]CommandSpec)
-
-	raw := cc.userConfig.GetStringMap(configKeyCommands)
-	for key, value := range raw {
-		sliderIdx, err := strconv.Atoi(strings.TrimSpace(key))
-		if err != nil {
-			cc.logger.Warnw("Ignoring command entry with non-numeric key", "key", key)
-			continue
-		}
-
-		spec, ok := cc.parseCommandValue(value)
-		if !ok {
-			continue
-		}
-
-		result[sliderIdx] = spec
-	}
-
-	return result
-}
-
-func (cc *CanonicalConfig) parseCommandValue(value interface{}) (CommandSpec, bool) {
-	switch typed := value.(type) {
-	case string:
-		trimmed := strings.TrimSpace(typed)
-		if trimmed == "" {
-			return CommandSpec{}, false
-		}
-
-		return CommandSpec{
-			Args:  []string{trimmed},
-			Shell: true,
-		}, true
-	case []interface{}:
-		args := []string{}
-		for _, rawArg := range typed {
-			strArg, ok := rawArg.(string)
-			if !ok {
-				cc.logger.Warnw("Ignoring command entry with non-string argument", "value", rawArg)
-				return CommandSpec{}, false
-			}
-
-			trimmed := strings.TrimSpace(strArg)
-			if trimmed == "" {
-				continue
-			}
-			args = append(args, trimmed)
-		}
-
-		if len(args) == 0 {
-			return CommandSpec{}, false
-		}
-
-		return CommandSpec{
-			Args: args,
-		}, true
-	case []string:
-		args := []string{}
-		for _, rawArg := range typed {
-			trimmed := strings.TrimSpace(rawArg)
-			if trimmed == "" {
-				continue
-			}
-			args = append(args, trimmed)
-		}
-
-		if len(args) == 0 {
-			return CommandSpec{}, false
-		}
-
-		return CommandSpec{
-			Args: args,
-		}, true
-	case map[string]interface{}:
-		// allow optional explicit spec: { shell: true, args: [...] }
-		return cc.parseCommandMap(typed)
-	default:
-		cc.logger.Warnw("Ignoring command entry with unsupported type", "value", value)
-		return CommandSpec{}, false
-	}
-}
-
-func (cc *CanonicalConfig) parseCommandMap(value map[string]interface{}) (CommandSpec, bool) {
-	spec := CommandSpec{}
-
-	if shellValue, ok := value["shell"]; ok {
-		if shellBool, ok := shellValue.(bool); ok {
-			spec.Shell = shellBool
-		} else {
-			cc.logger.Warnw("Ignoring command entry with non-bool shell flag", "value", shellValue)
-			return CommandSpec{}, false
-		}
-	}
-
-	if argsValue, ok := value["args"]; ok {
-		switch typedArgs := argsValue.(type) {
-		case []interface{}:
-			for _, rawArg := range typedArgs {
-				strArg, ok := rawArg.(string)
-				if !ok {
-					cc.logger.Warnw("Ignoring command entry with non-string argument", "value", rawArg)
-					return CommandSpec{}, false
-				}
-
-				trimmed := strings.TrimSpace(strArg)
-				if trimmed == "" {
-					continue
-				}
-				spec.Args = append(spec.Args, trimmed)
-			}
-		case []string:
-			for _, rawArg := range typedArgs {
-				trimmed := strings.TrimSpace(rawArg)
-				if trimmed == "" {
-					continue
-				}
-				spec.Args = append(spec.Args, trimmed)
-			}
-		case string:
-			trimmed := strings.TrimSpace(typedArgs)
-			if trimmed != "" {
-				spec.Args = append(spec.Args, trimmed)
-			}
-		default:
-			cc.logger.Warnw("Ignoring command entry with unsupported args type", "value", argsValue)
-			return CommandSpec{}, false
-		}
-	}
-
-	if len(spec.Args) == 0 {
-		return CommandSpec{}, false
-	}
-
-	return spec, true
 }
 
 func (cc *CanonicalConfig) captureConfigFingerprint() {

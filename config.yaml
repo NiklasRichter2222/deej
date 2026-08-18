@@ -3,16 +3,27 @@
 # Supported special targets: master, mic, system, deej.current, deej.unmapped.
 slider_count: 6
 slider_mapping:
-  0: master
-  1: deej.current
-  2: ts3client_win64.exe
-  3: discord.exe
-  4:
-    - spotify.exe
-    - youtube-music-desktop-app.exe
-  5: mic
+  left:
+    0: master
+    1: deej.current
+    2: ts3client_win64.exe
+    3: discord.exe
+    4:
+      - spotify.exe
+      - youtube-music-desktop-app.exe
+    5: mic
+  right:
+    0: master
+    1: deej.current
+    2: ts3client_win64.exe
+    3: discord.exe
+    4:
+      - spotify.exe
+      - youtube-music-desktop-app.exe
+    5: mic
 
 # --- General Options ---
+default_brightness: 0.15
 invert_sliders: false
 noise_reduction: default
 
@@ -27,28 +38,45 @@ sync_volumes: true
 # --- Controller Lighting ---
 background_lighting: rgb
 color_mapping:
-  0:
-    zero: '#00ffff'
-    full: '#ff0000'
-  1:
-    zero: '#ff7b00'
-    full: '#ff7b00'
-  2:
-    zero: '#00ffee'
-    full: '#001eff'
-  3:
-    zero: '#5662f6'
-    full: '#5662f6'
-  4:
-    zero: '#ff0033'
-    full: '#ff0033'
-  5:
-    zero: '#ff0000'
-    full: '#00ff00'
-
-# --- Commands (not edited in UI) ---
-commands:
-  "7": Set-AudioDevice -ID '{0.0.0.00000000}.{ec3dec42-b8f4-473c-978c-36386dcb25c9}'
-  "8": Set-AudioDevice -ID '{0.0.0.00000000}.{7daaefee-97e9-4bd8-95d1-136f2cbb406f}'
-  "9": Set-AudioDevice -ID '{0.0.1.00000000}.{df7d5313-7314-4373-abef-45901ff26b62}'
-  "10": Set-AudioDevice -ID '{0.0.1.00000000}.{eaead663-2795-4916-b530-3d2af318fbf7}'
+  left:
+    color: '#ffffff'
+    offcolor: '#000000'
+    0:
+      zero: '#00ffff'
+      full: '#ff0000'
+    1:
+      zero: '#ff7b00'
+      full: '#ff7b00'
+    2:
+      zero: '#00ffee'
+      full: '#001eff'
+    3:
+      zero: '#5662f6'
+      full: '#5662f6'
+    4:
+      zero: '#ff0033'
+      full: '#ff0033'
+    5:
+      zero: '#ff0000'
+      full: '#00ff00'
+  right:
+    color: '#ffffff'
+    offcolor: '#000000'
+    0:
+      zero: '#00ffff'
+      full: '#ff0000'
+    1:
+      zero: '#ff7b00'
+      full: '#ff7b00'
+    2:
+      zero: '#00ffee'
+      full: '#001eff'
+    3:
+      zero: '#5662f6'
+      full: '#5662f6'
+    4:
+      zero: '#ff0033'
+      full: '#ff0033'
+    5:
+      zero: '#ff0000'
+      full: '#00ff00'

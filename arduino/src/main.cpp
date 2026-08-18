@@ -1,13 +1,16 @@
 #include <Arduino.h>
-#include <RotaryEncoder.h> // <-- New State Machine Encoder Library
+#include <RotaryEncoder.h>
 #include <Wire.h>
-
 
 // --- System Configuration ---
 const unsigned long DEBOUNCE_DELAY = 50;
 const int MAX_ENCODER_VALUE = 50;
 const unsigned long DEEJ_SEND_INTERVAL = 15;
-const float GLOBAL_BRIGHTNESS = 0.15; // 15% brightness limit
+float globalBrightness = 0.15f; // Dynamic global brightness (0.0 to 1.0)
+
+// Max Brightness Blink state
+bool isMaxBlinking = false;
+unsigned long maxBlinkEndTime = 0;
 
 // --- LED Hardware & Color Definitions ---
 const int MUX_SELECT_PIN = 10;
@@ -45,15 +48,13 @@ struct Color {
   }
 };
 
-const Color COLOR_WHITE = {(byte)(255 * GLOBAL_BRIGHTNESS),
-                           (byte)(255 * GLOBAL_BRIGHTNESS),
-                           (byte)(255 * GLOBAL_BRIGHTNESS)};
-const Color COLOR_RED = {(byte)(255 * GLOBAL_BRIGHTNESS), 0, 0};
+const Color COLOR_WHITE = {255, 255, 255};
+const Color COLOR_RED = {255, 0, 0};
 const Color COLOR_OFF = {0, 0, 0};
 
 // LED Buffers for smooth rendering
 Color ledBuffer[TOTAL_LEDS + 1];
-Color ledHardwareState[TOTAL_LEDS + 1];
+Color ledHardwareState[TOTAL_LEDS + 1]; // Tracks exact bytes pushed to driver chips
 
 // Background State
 Color backgroundColor = {0, 0, 0};
@@ -70,25 +71,19 @@ struct EncoderInfo {
   uint8_t ledOrderLength;
   RotaryEncoder *encoder;
   long lastDetentPosition;
-  bool isPressed;
   bool isMuted;
   uint8_t lastButtonState;
   unsigned long lastDebounceTime;
-  Color zeroColor;
-  Color fullColor;
 
   EncoderInfo(const char *n, uint8_t b, uint8_t ra, uint8_t rb, int sLed,
               const int *order, uint8_t orderLen)
       : name(n), btn_pin(b), rotA_pin(ra), rotB_pin(rb), startLed(sLed),
         ledOrder(order), ledOrderLength(orderLen) {
     lastDetentPosition = 0;
-    isPressed = false;
     isMuted = false;
     lastButtonState = HIGH;
     lastDebounceTime = 0;
     encoder = nullptr;
-    zeroColor = COLOR_WHITE;
-    fullColor = COLOR_WHITE;
   }
 };
 
@@ -98,11 +93,15 @@ struct ButtonInfo {
   int ledNum;
   uint8_t lastState;
   unsigned long lastDebounceTime;
+  unsigned long pressStartTime;
+  unsigned long lastRepeatTime;
   bool isPressed;
 
   ButtonInfo(const char *n, uint8_t p, int ln) : name(n), pin(p), ledNum(ln) {
     lastState = HIGH;
     lastDebounceTime = 0;
+    pressStartTime = 0;
+    lastRepeatTime = 0;
     isPressed = false;
   }
 };
@@ -116,15 +115,24 @@ EncoderInfo encoders[] = {
     EncoderInfo("E6", 17, 15, 16, 51, ENCODER_LED_ORDER_E6, ENCODER_LED_COUNT)};
 const int numEncoders = sizeof(encoders) / sizeof(EncoderInfo);
 
+// Buttons: Rol = Brightness+, Rul = Page Left, Ror = Brightness-, Rur = Page Right
 ButtonInfo buttons[] = {ButtonInfo("Rol", 7, 61), ButtonInfo("Rul", 5, 64),
                         ButtonInfo("Ror", 6, 62), ButtonInfo("Rur", 4, 63)};
 const int numButtons = sizeof(buttons) / sizeof(ButtonInfo);
+
+// Page State (0 = Left / Rul, 1 = Right / Rur)
+int currentPage = 0;
+Color pageZeroColor[2][6];
+Color pageFullColor[2][6];
+Color pageButtonColor[2] = {COLOR_WHITE, COLOR_WHITE};
+Color pageButtonOffColor[2] = {COLOR_OFF, COLOR_OFF};
 
 unsigned long lastDeejSendTime = 0;
 
 // --- Function Prototypes ---
 void setSingleLedColor(int ledNum, const Color &c);
 void renderLEDs();
+void triggerMaxBlink();
 void processDeejSerial();
 Color parseHexColor(String hexStr);
 Color hsvToRgb(uint8_t h, uint8_t s, uint8_t v);
@@ -136,6 +144,11 @@ void IRAM_ATTR checkPosition() {
   }
 }
 
+void triggerMaxBlink() {
+  isMaxBlinking = true;
+  maxBlinkEndTime = millis() + 450;
+}
+
 // --- Main Setup ---
 void setup() {
   Serial.begin(9600);
@@ -143,14 +156,22 @@ void setup() {
     ;
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(400000); // Fast I2C to support smooth animations
+  Wire.setClock(400000);
 
   pinMode(MUX_SELECT_PIN, OUTPUT);
+
+  // Initialize default page colors
+  for (int p = 0; p < 2; p++) {
+    for (int e = 0; e < numEncoders; e++) {
+      pageZeroColor[p][e] = COLOR_WHITE;
+      pageFullColor[p][e] = COLOR_WHITE;
+    }
+  }
 
   // Initialize LED driver chips & clear buffers
   for (int i = 1; i <= TOTAL_LEDS; i++) {
     ledBuffer[i] = COLOR_OFF;
-    ledHardwareState[i] = COLOR_OFF;
+    ledHardwareState[i] = {255, 255, 255}; // dummy initial state to force first write
   }
 
   for (int bank = 0; bank < 2; bank++) {
@@ -169,13 +190,11 @@ void setup() {
 
   // Setup Encoders with State Machine
   for (int i = 0; i < numEncoders; i++) {
-    // SWAPPED rotB_pin and rotA_pin here to reverse the hardware spin direction
     encoders[i].encoder =
         new RotaryEncoder(encoders[i].rotB_pin, encoders[i].rotA_pin,
                           RotaryEncoder::LatchMode::TWO03);
     pinMode(encoders[i].btn_pin, INPUT_PULLUP);
 
-    // Attach the common interrupt to both pins of every encoder
     attachInterrupt(digitalPinToInterrupt(encoders[i].rotA_pin), checkPosition,
                     CHANGE);
     attachInterrupt(digitalPinToInterrupt(encoders[i].rotB_pin), checkPosition,
@@ -185,6 +204,8 @@ void setup() {
   for (int i = 0; i < numButtons; i++) {
     pinMode(buttons[i].pin, INPUT_PULLUP);
   }
+
+  renderLEDs();
 }
 
 // --- Main Loop ---
@@ -193,8 +214,18 @@ void loop() {
 
   processDeejSerial();
 
-  // Rainbow Animation Timer (Updates ~30 times a second)
-  if (isRainbowMode && millis() - lastRainbowUpdate > 33) {
+  // Handle Max Brightness Blink Animation
+  if (isMaxBlinking) {
+    if (millis() < maxBlinkEndTime) {
+      needsRender = true;
+    } else {
+      isMaxBlinking = false;
+      needsRender = true;
+    }
+  }
+
+  // Rainbow Animation Timer (~30 fps)
+  if (isRainbowMode && globalBrightness > 0.01f && millis() - lastRainbowUpdate > 33) {
     rainbowHueOffset++;
     lastRainbowUpdate = millis();
     needsRender = true;
@@ -225,7 +256,6 @@ void loop() {
       encoders[i].lastDebounceTime = millis();
       encoders[i].lastButtonState = reading;
       if (reading == LOW) {
-        // Encoder knob clicked -> Send mute toggle command
         encoders[i].isMuted = !encoders[i].isMuted;
         Serial.printf("M:%d\n", i);
         needsRender = true;
@@ -233,21 +263,78 @@ void loop() {
     }
   }
 
-  // Check Rubber Dome Buttons (Rol-Rur -> O:7 to O:10)
+  // Check Rubber Dome Buttons (Rol: Brightness+, Ror: Brightness-, Rul: Page Left, Rur: Page Right)
   for (int i = 0; i < numButtons; i++) {
     int reading = digitalRead(buttons[i].pin);
     if (reading != buttons[i].lastState &&
         millis() - buttons[i].lastDebounceTime > DEBOUNCE_DELAY) {
-      buttons[i].isPressed = (reading == LOW);
       buttons[i].lastDebounceTime = millis();
       buttons[i].lastState = reading;
+      buttons[i].isPressed = (reading == LOW);
       needsRender = true;
-      if (buttons[i].isPressed)
-        Serial.printf("O:%d\n", 7 + i);
+
+      if (reading == LOW) {
+        buttons[i].pressStartTime = millis();
+        buttons[i].lastRepeatTime = millis();
+
+        // Tap actions
+        if (i == 0) { // Rol -> Brightness +
+          if (globalBrightness >= 1.0f) {
+            triggerMaxBlink();
+          } else if (globalBrightness == 0.0f) {
+            globalBrightness = 0.03f;
+          } else {
+            globalBrightness = min(1.0f, globalBrightness + 0.03f);
+            if (globalBrightness >= 1.0f) {
+              triggerMaxBlink();
+            }
+          }
+        } else if (i == 2) { // Ror -> Brightness -
+          if (globalBrightness > 0.01f) {
+            globalBrightness = max(0.01f, globalBrightness - 0.03f);
+          } else if (globalBrightness == 0.01f) {
+            // Discrete press when already at 1% threshold turns off completely
+            globalBrightness = 0.0f;
+          }
+        } else if (i == 1) { // Rul -> Page Left (Page 0)
+          if (currentPage != 0) {
+            currentPage = 0;
+            Serial.println("P:0");
+          }
+        } else if (i == 3) { // Rur -> Page Right (Page 1)
+          if (currentPage != 1) {
+            currentPage = 1;
+            Serial.println("P:1");
+          }
+        }
+      }
+    }
+
+    // Continuous hold adjustment for Brightness (+ on Rol / - on Ror)
+    if (buttons[i].isPressed && (i == 0 || i == 2)) {
+      if (millis() - buttons[i].pressStartTime > 250 &&
+          millis() - buttons[i].lastRepeatTime > 30) {
+        buttons[i].lastRepeatTime = millis();
+        if (i == 0) {
+          if (globalBrightness < 1.0f) {
+            globalBrightness = min(1.0f, globalBrightness + 0.02f);
+            if (globalBrightness >= 1.0f) {
+              triggerMaxBlink();
+            }
+            needsRender = true;
+          }
+        } else {
+          // Hold on '-' stops at 0.01f (1% faders, 0% mood)
+          if (globalBrightness > 0.01f) {
+            globalBrightness = max(0.01f, globalBrightness - 0.02f);
+            needsRender = true;
+          }
+        }
+      }
     }
   }
 
-  // Render LEDs if anything changed (or if rainbow is ticking)
+  // Render LEDs if needed
   if (needsRender) {
     renderLEDs();
   }
@@ -297,6 +384,63 @@ void processDeejSerial() {
           renderLEDs();
         }
       }
+    } else if (line.startsWith("P:")) {
+      String pageStr = line.substring(2);
+      pageStr.trim();
+      int p = (pageStr == "1" || pageStr.equalsIgnoreCase("right")) ? 1 : 0;
+      if (currentPage != p) {
+        currentPage = p;
+        renderLEDs();
+      }
+    } else if (line.startsWith("CP:")) {
+      int c1 = line.indexOf(':');
+      int c2 = line.indexOf(':', c1 + 1);
+      int c3 = line.indexOf(':', c2 + 1);
+      if (c1 != -1 && c2 != -1) {
+        String pStr = line.substring(c1 + 1, c2);
+        int p = (pStr == "1" || pStr.equalsIgnoreCase("R") || pStr.equalsIgnoreCase("right")) ? 1 : 0;
+        String activeHex = (c3 != -1) ? line.substring(c2 + 1, c3) : line.substring(c2 + 1);
+        String offHex = (c3 != -1) ? line.substring(c3 + 1) : "#000000";
+        pageButtonColor[p] = parseHexColor(activeHex);
+        pageButtonOffColor[p] = parseHexColor(offHex);
+        renderLEDs();
+      }
+    } else if (line.startsWith("C:")) {
+      int c1 = line.indexOf(':');
+      int c2 = line.indexOf(':', c1 + 1);
+      int c3 = line.indexOf(':', c2 + 1);
+      int c4 = line.indexOf(':', c3 + 1);
+
+      if (c1 != -1 && c2 != -1 && c3 != -1 && c4 != -1) {
+        String pStr = line.substring(c1 + 1, c2);
+        int p = (pStr == "1" || pStr.equalsIgnoreCase("R") || pStr.equalsIgnoreCase("right")) ? 1 : 0;
+        int idx = line.substring(c2 + 1, c3).toInt();
+        if (idx >= 0 && idx < numEncoders) {
+          pageZeroColor[p][idx] = parseHexColor(line.substring(c3 + 1, c4));
+          pageFullColor[p][idx] = parseHexColor(line.substring(c4 + 1));
+          renderLEDs();
+        }
+      } else if (c1 != -1 && c2 != -1 && c3 != -1) {
+        int idx = line.substring(c1 + 1, c2).toInt();
+        if (idx >= 0 && idx < numEncoders) {
+          Color z = parseHexColor(line.substring(c2 + 1, c3));
+          Color f = parseHexColor(line.substring(c3 + 1));
+          pageZeroColor[0][idx] = z;
+          pageFullColor[0][idx] = f;
+          pageZeroColor[1][idx] = z;
+          pageFullColor[1][idx] = f;
+          renderLEDs();
+        }
+      }
+    } else if (line.startsWith("BR:")) {
+      String brStr = line.substring(3);
+      brStr.trim();
+      float val = brStr.toFloat();
+      if (val > 1.0f) val = val / 100.0f;
+      if (val < 0.0f) val = 0.0f;
+      if (val > 1.0f) val = 1.0f;
+      globalBrightness = val;
+      renderLEDs();
     } else if (line.startsWith("B:")) {
       String hexStr = line.substring(2);
       hexStr.trim();
@@ -307,18 +451,6 @@ void processDeejSerial() {
         backgroundColor = parseHexColor(hexStr);
       }
       renderLEDs();
-    } else if (line.startsWith("C:")) {
-      int c1 = line.indexOf(':');
-      int c2 = line.indexOf(':', c1 + 1);
-      int c3 = line.indexOf(':', c2 + 1);
-      if (c1 != -1 && c2 != -1 && c3 != -1) {
-        int idx = line.substring(c1 + 1, c2).toInt();
-        if (idx >= 0 && idx < numEncoders) {
-          encoders[idx].zeroColor = parseHexColor(line.substring(c2 + 1, c3));
-          encoders[idx].fullColor = parseHexColor(line.substring(c3 + 1));
-          renderLEDs();
-        }
-      }
     }
   }
 }
@@ -326,65 +458,59 @@ void processDeejSerial() {
 // --- Render Engine ---
 void renderLEDs() {
   // 1. Draw Background (Solid or Rainbow) ONLY on Outer LEDs (65-96)
+  // Background turns off completely when globalBrightness <= 0.01f
+  bool bgAllowed = (globalBrightness > 0.01f);
   for (int i = 1; i <= TOTAL_LEDS; i++) {
     if (i >= 65 && i <= 96) {
-      if (isRainbowMode) {
-        // Offset hue based on physical position.
-        // We calculate the spread across just these 32 LEDs so the rainbow
-        // wraps perfectly.
-        uint8_t pixelHue = rainbowHueOffset + ((i - 65) * 255 / 32);
-        ledBuffer[i] = hsvToRgb(pixelHue, 255, 255);
+      if (bgAllowed) {
+        if (isRainbowMode) {
+          uint8_t pixelHue = rainbowHueOffset + ((i - 65) * 255 / 32);
+          ledBuffer[i] = hsvToRgb(pixelHue, 255, 255);
+        } else {
+          ledBuffer[i] = backgroundColor;
+        }
       } else {
-        ledBuffer[i] = backgroundColor;
+        ledBuffer[i] = COLOR_OFF;
       }
     } else {
-      // Keep Encoders (1-60) and Dome Buttons (61-64) background completely OFF
       ledBuffer[i] = COLOR_OFF;
     }
   }
 
-  // 2. Overlay Encoders (Volume Lit LEDs)
+  // 2. Overlay Encoders (Volume Lit LEDs for current page)
   for (int e = 0; e < numEncoders; e++) {
     EncoderInfo &enc = encoders[e];
     uint8_t orderLength =
         (enc.ledOrderLength > 0) ? enc.ledOrderLength : ENCODER_LED_COUNT;
 
-    // Calculate exactly how far along the volume is (0.0 to 1.0)
     float percent = (float)enc.lastDetentPosition / MAX_ENCODER_VALUE;
+
+    Color zeroC = pageZeroColor[currentPage][e];
+    Color fullC = pageFullColor[currentPage][e];
 
     Color activeColor;
     if (enc.isMuted) {
       activeColor = COLOR_RED;
     } else {
-      activeColor.r =
-          enc.zeroColor.r + (enc.fullColor.r - enc.zeroColor.r) * percent;
-      activeColor.g =
-          enc.zeroColor.g + (enc.fullColor.g - enc.zeroColor.g) * percent;
-      activeColor.b =
-          enc.zeroColor.b + (enc.fullColor.b - enc.zeroColor.b) * percent;
+      activeColor.r = zeroC.r + (fullC.r - zeroC.r) * percent;
+      activeColor.g = zeroC.g + (fullC.g - zeroC.g) * percent;
+      activeColor.b = zeroC.b + (fullC.b - zeroC.b) * percent;
     }
 
-    // Calculate how many "LEDs worth" of volume we have (e.g., 9.2)
     float ledFill = percent * orderLength;
     if (enc.isMuted && ledFill < 1.0) {
-      // When muted and volume is 0 or very low, light up at least 1 red LED
-      // so the user clearly sees that this channel is muted.
       ledFill = 1.0;
     }
-    int fullLeds = (int)ledFill; // e.g., 9 fully lit LEDs
-    float partialFraction =
-        ledFill - fullLeds; // e.g., 0.2 brightness for the 10th LED
+    int fullLeds = (int)ledFill;
+    float partialFraction = ledFill - fullLeds;
 
     for (int i = 0; i < orderLength; i++) {
       int localLedIndex = enc.ledOrder ? enc.ledOrder[i] : (i + 1);
       int globalLedNum = enc.startLed + localLedIndex - 1;
 
       if (i < fullLeds) {
-        // LED is fully engulfed by the volume level
         ledBuffer[globalLedNum] = activeColor;
       } else if (i == fullLeds && partialFraction > 0.01) {
-        // LED is partially engulfed. Crossfade it smoothly over the existing
-        // background color.
         Color bg = ledBuffer[globalLedNum];
         Color partialColor;
         partialColor.r =
@@ -396,23 +522,34 @@ void renderLEDs() {
 
         ledBuffer[globalLedNum] = partialColor;
       }
-      // If i > fullLeds, do nothing (leave the background color alone)
     }
   }
 
   // 3. Overlay Dome Buttons
-  for (int i = 0; i < numButtons; i++) {
-    if (buttons[i].isPressed) {
-      ledBuffer[buttons[i].ledNum] = COLOR_WHITE;
-    }
+  // LED 61 (Rol / Brightness+):
+  // When max brightness is reached/pressed, blinks fast to indicate max.
+  // Otherwise always shines at the current fader brightness.
+  if (isMaxBlinking) {
+    bool blinkState = (((maxBlinkEndTime - millis()) / 75) % 2 == 0);
+    ledBuffer[61] = blinkState ? COLOR_WHITE : COLOR_OFF;
+  } else {
+    ledBuffer[61] = (globalBrightness > 0.0f) ? COLOR_WHITE : COLOR_OFF;
   }
 
-  // 4. Push to Hardware (Only send if the color changed to save I2C time)
+  // LED 62 (Ror / Brightness-):
+  // Always shines white at 1% brightness as long as fader brightness > 0%.
+  // If fader brightness is 0%, LED 62 is also completely off (0%).
+  ledBuffer[62] = (globalBrightness > 0.0f) ? COLOR_WHITE : COLOR_OFF;
+
+  // LED 64 (Rul / Page Left): active color if page 0, else offcolor (scaled with faders)
+  ledBuffer[64] = (currentPage == 0) ? pageButtonColor[0] : pageButtonOffColor[0];
+
+  // LED 63 (Rur / Page Right): active color if page 1, else offcolor (scaled with faders)
+  ledBuffer[63] = (currentPage == 1) ? pageButtonColor[1] : pageButtonOffColor[1];
+
+  // 4. Push to Hardware (setSingleLedColor checks per-LED change against ledHardwareState)
   for (int i = 1; i <= TOTAL_LEDS; i++) {
-    if (ledBuffer[i] != ledHardwareState[i]) {
-      setSingleLedColor(i, ledBuffer[i]);
-      ledHardwareState[i] = ledBuffer[i];
-    }
+    setSingleLedColor(i, ledBuffer[i]);
   }
 }
 
@@ -423,9 +560,9 @@ Color parseHexColor(String hexStr) {
     hexStr = hexStr.substring(1);
   long number = strtol(hexStr.c_str(), nullptr, 16);
   Color c;
-  c.r = (byte)(((number >> 16) & 0xFF) * GLOBAL_BRIGHTNESS);
-  c.g = (byte)(((number >> 8) & 0xFF) * GLOBAL_BRIGHTNESS);
-  c.b = (byte)((number & 0xFF) * GLOBAL_BRIGHTNESS);
+  c.r = (byte)((number >> 16) & 0xFF);
+  c.g = (byte)((number >> 8) & 0xFF);
+  c.b = (byte)(number & 0xFF);
   return c;
 }
 
@@ -475,27 +612,65 @@ Color hsvToRgb(uint8_t h, uint8_t s, uint8_t v) {
       break;
     }
   }
-  return {(byte)(r * GLOBAL_BRIGHTNESS), (byte)(g * GLOBAL_BRIGHTNESS),
-          (byte)(b * GLOBAL_BRIGHTNESS)};
+  return {r, g, b};
+}
+
+byte applyBrightness(byte val, float factor) {
+  if (factor <= 0.0f || val == 0)
+    return 0;
+  float scaled = val * factor;
+  if (scaled > 0.0f && scaled < 1.0f)
+    return 1;
+  return (byte)round(scaled);
 }
 
 void setSingleLedColor(int ledNum, const Color &c) {
   if (ledNum < 1 || ledNum > TOTAL_LEDS)
     return;
 
-  int bankIndex = (ledNum - 1) / LEDS_PER_BANK;
-  digitalWrite(MUX_SELECT_PIN, bankIndex == 0 ? LOW : HIGH);
+  float factor = 0.0f;
+  if (ledNum >= 1 && ledNum <= 60) {
+    // Encoders / Faders: scale with globalBrightness
+    factor = globalBrightness;
+  } else if (ledNum == 61) {
+    // '+' button: full during blink, otherwise globalBrightness (same as faders)
+    factor = isMaxBlinking ? 1.0f : globalBrightness;
+  } else if (ledNum == 62) {
+    // '-' button: 1% as long as globalBrightness > 0, otherwise 0%
+    factor = (globalBrightness > 0.0f) ? 0.01f : 0.0f;
+  } else if (ledNum == 63 || ledNum == 64) {
+    // Page switcher buttons: scale with globalBrightness (same as faders)
+    factor = globalBrightness;
+  } else if (ledNum >= 65 && ledNum <= 96) {
+    // Mood / Surround: off when <= 1%, otherwise globalBrightness
+    factor = (globalBrightness > 0.01f) ? globalBrightness : 0.0f;
+  }
 
-  int ledNumInBank = (ledNum - 1) % LEDS_PER_BANK;
-  int chipIndexInBank = ledNumInBank / LEDS_PER_CHIP;
-  byte chipAddress = LED_CHIP_ADDRESSES[chipIndexInBank];
-  int ledNumOnChip = ledNumInBank % LEDS_PER_CHIP;
-  int baseOutput = ledNumOnChip * 3;
+  byte outR = applyBrightness(c.r, factor);
+  byte outG = applyBrightness(c.g, factor);
+  byte outB = applyBrightness(c.b, factor);
 
-  Wire.beginTransmission(chipAddress);
-  Wire.write(OUT0_COLOR_ADDR + baseOutput);
-  Wire.write(c.r);
-  Wire.write(c.g);
-  Wire.write(c.b);
-  Wire.endTransmission();
+  // Only transmit over I2C if the actual physical RGB output changed
+  if (outR != ledHardwareState[ledNum].r ||
+      outG != ledHardwareState[ledNum].g ||
+      outB != ledHardwareState[ledNum].b) {
+
+    int bankIndex = (ledNum - 1) / LEDS_PER_BANK;
+    digitalWrite(MUX_SELECT_PIN, bankIndex == 0 ? LOW : HIGH);
+
+    int ledNumInBank = (ledNum - 1) % LEDS_PER_BANK;
+    int chipIndexInBank = ledNumInBank / LEDS_PER_CHIP;
+    byte chipAddress = LED_CHIP_ADDRESSES[chipIndexInBank];
+    int ledNumOnChip = ledNumInBank % LEDS_PER_CHIP;
+    int baseOutput = ledNumOnChip * 3;
+
+    Wire.beginTransmission(chipAddress);
+    Wire.write(OUT0_COLOR_ADDR + baseOutput);
+    Wire.write(outR);
+    Wire.write(outG);
+    Wire.write(outB);
+    Wire.endTransmission();
+
+    ledHardwareState[ledNum] = {outR, outG, outB};
+  }
 }

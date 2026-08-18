@@ -10,27 +10,32 @@ const configUIHTML = `<!doctype html>
     :root { color-scheme: dark; }
     body { font-family: Arial, sans-serif; margin: 0; background: #1f1f1f; color: #f1f1f1; }
     .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
-    h1, h2 { margin: 0 0 12px; }
+    h1, h2, h3 { margin: 0 0 12px; }
     section { background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px; padding: 14px; margin-bottom: 16px; }
     .row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
     .col { flex: 1 1 220px; min-width: 220px; }
     label { font-size: 13px; display: block; margin-bottom: 6px; }
     input, select, button { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid #555; background: #111; color: #f1f1f1; }
     input[type="color"] { padding: 2px; height: 38px; background: transparent; }
-    button { cursor: pointer; background: #2f6feb; border-color: #2f6feb; }
+    button { cursor: pointer; background: #2f6feb; border-color: #2f6feb; font-weight: 500; }
     button.secondary { background: #333; border-color: #555; }
     .inline { display: flex; gap: 8px; align-items: center; }
     .inline input, .inline select, .inline button { flex: 1; }
     .toggle { display: flex; align-items: center; gap: 8px; }
     .toggle input { width: auto; }
-    .slider-card { border: 1px solid #444; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+    .slider-card { border: 1px solid #444; border-radius: 8px; padding: 10px; margin-bottom: 10px; background: #222; }
     .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    .chip { background: #0d1117; border: 1px solid #444; border-radius: 999px; padding: 4px 8px; font-size: 12px; }
-    .chip button { width: auto; padding: 0 6px; margin-left: 4px; background: #444; border-color: #666; }
-    .actions { display: flex; gap: 10px; }
-    .actions button { flex: 1; }
+    .chip { background: #0d1117; border: 1px solid #444; border-radius: 999px; padding: 4px 8px; font-size: 12px; display: flex; align-items: center; }
+    .chip button { width: auto; padding: 0 6px; margin-left: 6px; background: #444; border-color: #666; font-size: 14px; line-height: 1; }
+    .actions { display: flex; gap: 10px; margin-top: 20px; }
+    .actions button { flex: 1; padding: 12px; font-size: 14px; }
     .muted { color: #9aa0a6; font-size: 12px; }
     #status { margin-bottom: 12px; font-size: 13px; color: #9ecbff; }
+    
+    /* Page Tabs */
+    .page-tabs { display: flex; gap: 10px; margin-bottom: 16px; }
+    .page-tab { flex: 1; padding: 12px; border-radius: 8px; background: #333; border: 2px solid #444; color: #aaa; font-size: 15px; font-weight: bold; cursor: pointer; transition: all 0.2s; }
+    .page-tab.active { background: #1f6feb; border-color: #58a6ff; color: #fff; }
   </style>
 </head>
 <body>
@@ -100,6 +105,10 @@ const configUIHTML = `<!doctype html>
             <option value="high">High</option>
           </select>
         </div>
+        <div class="col">
+          <label for="defaultBrightness">Default brightness (%)</label>
+          <input id="defaultBrightness" type="number" min="0" max="100" value="15">
+        </div>
         <div class="col toggle"><input id="invertSliders" type="checkbox"><label for="invertSliders">Invert sliders</label></div>
         <div class="col toggle"><input id="sendOnStartup" type="checkbox"><label for="sendOnStartup">Send on startup</label></div>
         <div class="col toggle"><input id="syncVolumes" type="checkbox"><label for="syncVolumes">Sync volumes continuously</label></div>
@@ -120,19 +129,34 @@ const configUIHTML = `<!doctype html>
       </div>
     </section>
 
-    <section>
-      <h2>Slider mapping</h2>
+    <!-- Page Switcher Tabs -->
+    <div class="page-tabs">
+      <button type="button" class="page-tab active" id="tabLeft">Left Page (Rul)</button>
+      <button type="button" class="page-tab" id="tabRight">Right Page (Rur)</button>
+    </div>
+
+    <section id="pageConfigSection">
+      <h2 id="pageTitle">Left Page Configuration</h2>
+      
       <div class="row">
         <div class="col">
+          <label>Page Switch Button Color (Active)</label>
+          <input id="pageBtnColor" type="color" value="#ffffff">
+        </div>
+        <div class="col">
+          <label>Page Switch Button Color (Inactive/Off)</label>
+          <input id="pageBtnOffColor" type="color" value="#000000">
+        </div>
+        <div class="col">
           <label>Number of sliders</label>
-          <input id="sliderCount" type="number" min="1" max="32">
+          <input id="sliderCount" type="number" min="1" max="32" value="6">
         </div>
       </div>
-      <div id="sliders"></div>
-    </section>
 
-    <section>
-      <h2>Slider LED colors</h2>
+      <h3>Slider Mapping</h3>
+      <div id="sliders"></div>
+
+      <h3 style="margin-top: 20px;">Slider LED Colors</h3>
       <div id="colors"></div>
     </section>
 
@@ -144,8 +168,13 @@ const configUIHTML = `<!doctype html>
 
   <script>
     let state;
-    let sliderTargets = {};
-    let sliderColors = {};
+    let activeTab = 'left'; // 'left' or 'right'
+
+    // Paged in-memory edits: { left: { targets: {}, colors: {}, btnColor: '#ffffff', btnOffColor: '#000000' }, right: { ... } }
+    let pageData = {
+      left: { targets: {}, colors: {}, btnColor: '#ffffff', btnOffColor: '#000000' },
+      right: { targets: {}, colors: {}, btnColor: '#ffffff', btnOffColor: '#000000' },
+    };
 
     const byId = (id) => document.getElementById(id);
     const status = (msg, isError = false) => {
@@ -163,13 +192,36 @@ const configUIHTML = `<!doctype html>
     }
 
     function initMappingData(config) {
-      sliderTargets = {};
-      sliderColors = {};
-      for (let i = 0; i < config.sliderCount; i++) {
-        const key = String(i);
-        sliderTargets[key] = [...(config.sliderMapping[key] || [])];
-        sliderColors[key] = config.colorMapping[key] || { zero: '#ff0000', full: '#00ff00' };
-      }
+      const count = config.sliderCount || 6;
+      ['left', 'right'].forEach((p) => {
+        const pCfg = config[p] || {};
+        pageData[p].btnColor = pCfg.buttonColor || '#ffffff';
+        pageData[p].btnOffColor = pCfg.buttonOffColor || '#000000';
+        pageData[p].targets = {};
+        pageData[p].colors = {};
+
+        const sMap = pCfg.sliderMapping || {};
+        const cMap = pCfg.colorMapping || {};
+
+        for (let i = 0; i < count; i++) {
+          const key = String(i);
+          pageData[p].targets[key] = [...(sMap[key] || [])];
+          pageData[p].colors[key] = cMap[key] || { zero: '#00ffff', full: '#ff0000' };
+        }
+      });
+    }
+
+    function switchTab(tab) {
+      activeTab = tab;
+      byId('tabLeft').className = 'page-tab' + (activeTab === 'left' ? ' active' : '');
+      byId('tabRight').className = 'page-tab' + (activeTab === 'right' ? ' active' : '');
+      byId('pageTitle').textContent = (activeTab === 'left' ? 'Left Page (Rul)' : 'Right Page (Rur)') + ' Configuration';
+      
+      byId('pageBtnColor').value = pageData[activeTab].btnColor || '#ffffff';
+      byId('pageBtnOffColor').value = pageData[activeTab].btnOffColor || '#000000';
+
+      renderSliders();
+      renderColors();
     }
 
     function renderProfiles() {
@@ -232,16 +284,17 @@ const configUIHTML = `<!doctype html>
       const count = Number(byId('sliderCount').value || 1);
       const sliders = byId('sliders');
       sliders.innerHTML = '';
+      const currentTargets = pageData[activeTab].targets;
 
       for (let i = 0; i < count; i++) {
         const key = String(i);
-        if (!sliderTargets[key]) sliderTargets[key] = [];
+        if (!currentTargets[key]) currentTargets[key] = [];
 
         const card = document.createElement('div');
         card.className = 'slider-card';
-        card.innerHTML = '<h3>Slider ' + i + '</h3>' +
-          '<div class="inline"><select id="suggest-' + key + '"></select><button class="secondary" id="add-suggest-' + key + '">Add</button></div>' +
-          '<div class="inline" style="margin-top:8px;"><input id="custom-' + key + '" placeholder="Custom target (e.g. game.exe, deej.current)"><button class="secondary" id="add-custom-' + key + '">Add custom</button></div>' +
+        card.innerHTML = '<h4>Slider ' + i + '</h4>' +
+          '<div class="inline"><select id="suggest-' + key + '"></select><button type="button" class="secondary" id="add-suggest-' + key + '">Add</button></div>' +
+          '<div class="inline" style="margin-top:8px;"><input id="custom-' + key + '" placeholder="Custom target (e.g. game.exe, deej.current)"><button type="button" class="secondary" id="add-custom-' + key + '">Add custom</button></div>' +
           '<div class="chips" id="chips-' + key + '"></div>';
         sliders.appendChild(card);
 
@@ -255,14 +308,14 @@ const configUIHTML = `<!doctype html>
 
         byId('add-suggest-' + key).onclick = () => {
           const target = suggest.value;
-          if (target && !sliderTargets[key].includes(target)) sliderTargets[key].push(target);
+          if (target && !currentTargets[key].includes(target)) currentTargets[key].push(target);
           renderSliderChips(key);
         };
 
         byId('add-custom-' + key).onclick = () => {
           const input = byId('custom-' + key);
           const target = input.value.trim();
-          if (target && !sliderTargets[key].includes(target)) sliderTargets[key].push(target);
+          if (target && !currentTargets[key].includes(target)) currentTargets[key].push(target);
           input.value = '';
           renderSliderChips(key);
         };
@@ -275,7 +328,8 @@ const configUIHTML = `<!doctype html>
       const chips = byId('chips-' + key);
       if (!chips) return;
       chips.innerHTML = '';
-      sliderTargets[key].forEach((target, idx) => {
+      const currentTargets = pageData[activeTab].targets;
+      (currentTargets[key] || []).forEach((target, idx) => {
         const chip = document.createElement('div');
         chip.className = 'chip';
         chip.textContent = target;
@@ -283,7 +337,7 @@ const configUIHTML = `<!doctype html>
         remove.type = 'button';
         remove.textContent = '×';
         remove.onclick = () => {
-          sliderTargets[key].splice(idx, 1);
+          currentTargets[key].splice(idx, 1);
           renderSliderChips(key);
         };
         chip.appendChild(remove);
@@ -295,26 +349,27 @@ const configUIHTML = `<!doctype html>
       const count = Number(byId('sliderCount').value || 1);
       const wrap = byId('colors');
       wrap.innerHTML = '';
+      const currentColors = pageData[activeTab].colors;
 
       for (let i = 0; i < count; i++) {
         const key = String(i);
-        if (!sliderColors[key]) sliderColors[key] = { zero: '#ff0000', full: '#00ff00' };
-        const cfg = sliderColors[key];
+        if (!currentColors[key]) currentColors[key] = { zero: '#00ffff', full: '#ff0000' };
+        const cfg = currentColors[key];
 
         const card = document.createElement('div');
         card.className = 'slider-card';
-        card.innerHTML = '<h3>Slider ' + i + '</h3>' +
-          '<div class="row"><div class="col"><label>Start color</label><input id="zero-' + key + '" type="color"></div><div class="col"><label>End color</label><input id="full-' + key + '" type="color"></div><div class="col"><label>&nbsp;</label><button class="secondary" id="copy-zero-full-' + key + '">Copy start → end</button></div></div>';
+        card.innerHTML = '<h4>Slider ' + i + ' Colors</h4>' +
+          '<div class="row"><div class="col"><label>Start / Zero color</label><input id="zero-' + key + '" type="color"></div><div class="col"><label>End / Full color</label><input id="full-' + key + '" type="color"></div><div class="col"><label>&nbsp;</label><button type="button" class="secondary" id="copy-zero-full-' + key + '">Copy start → end</button></div></div>';
         wrap.appendChild(card);
 
-        byId('zero-' + key).value = cfg.zero || '#ff0000';
-        byId('full-' + key).value = cfg.full || '#00ff00';
+        byId('zero-' + key).value = cfg.zero || '#00ffff';
+        byId('full-' + key).value = cfg.full || '#ff0000';
 
-        byId('zero-' + key).onchange = () => { sliderColors[key].zero = byId('zero-' + key).value; };
-        byId('full-' + key).onchange = () => { sliderColors[key].full = byId('full-' + key).value; };
+        byId('zero-' + key).onchange = () => { currentColors[key].zero = byId('zero-' + key).value; };
+        byId('full-' + key).onchange = () => { currentColors[key].full = byId('full-' + key).value; };
         byId('copy-zero-full-' + key).onclick = () => {
           const value = byId('zero-' + key).value;
-          sliderColors[key].full = value;
+          currentColors[key].full = value;
           byId('full-' + key).value = value;
         };
       }
@@ -326,32 +381,50 @@ const configUIHTML = `<!doctype html>
 
     function collectConfig() {
       const sliderCount = Number(byId('sliderCount').value || 1);
-      const sliderMapping = {};
-      const colorMapping = {};
 
+      // Collect left page
+      const leftSliders = {};
+      const leftColors = {};
       for (let i = 0; i < sliderCount; i++) {
         const key = String(i);
-        sliderMapping[key] = [...(sliderTargets[key] || [])];
+        leftSliders[key] = [...(pageData.left.targets[key] || [])];
+        const c = pageData.left.colors[key] || { zero: '#00ffff', full: '#ff0000' };
+        leftColors[key] = { zero: c.zero || '#00ffff', full: c.full || '#ff0000' };
+      }
 
-        const color = sliderColors[key] || { zero: '#ff0000', full: '#00ff00' };
-        colorMapping[key] = {
-          zero: color.zero || '#ff0000',
-          full: color.full || '#00ff00',
-        };
+      // Collect right page
+      const rightSliders = {};
+      const rightColors = {};
+      for (let i = 0; i < sliderCount; i++) {
+        const key = String(i);
+        rightSliders[key] = [...(pageData.right.targets[key] || [])];
+        const c = pageData.right.colors[key] || { zero: '#00ffff', full: '#ff0000' };
+        rightColors[key] = { zero: c.zero || '#00ffff', full: c.full || '#ff0000' };
       }
 
       return {
         sliderCount,
-        sliderMapping,
+        activePage: activeTab,
+        left: {
+          buttonColor: pageData.left.btnColor || '#ffffff',
+          buttonOffColor: pageData.left.btnOffColor || '#000000',
+          sliderMapping: leftSliders,
+          colorMapping: leftColors,
+        },
+        right: {
+          buttonColor: pageData.right.btnColor || '#ffffff',
+          buttonOffColor: pageData.right.btnOffColor || '#000000',
+          sliderMapping: rightSliders,
+          colorMapping: rightColors,
+        },
         comPort: byId('comPort').value.trim(),
         baudRate: Number(byId('baudRate').value || 9600),
         invertSliders: byId('invertSliders').checked,
         noiseReduction: byId('noiseReduction').value || 'default',
+        defaultBrightness: (Number(byId('defaultBrightness').value || 15)) / 100.0,
         sendOnStartup: byId('sendOnStartup').checked,
         syncVolumes: byId('syncVolumes').checked,
         backgroundLighting: byId('bgPreset').value === 'custom' ? byId('bgCustom').value : byId('bgPreset').value,
-        colorMapping,
-        commands: state.config.commands,
       };
     }
 
@@ -359,11 +432,12 @@ const configUIHTML = `<!doctype html>
       status('Loading state...');
       state = await request('/api/state');
 
-      byId('sliderCount').value = state.config.sliderCount;
+      byId('sliderCount').value = state.config.sliderCount || 6;
       byId('comPort').value = state.config.comPort || '';
       byId('baudRate').value = state.config.baudRate || 9600;
       byId('invertSliders').checked = !!state.config.invertSliders;
       byId('noiseReduction').value = state.config.noiseReduction || 'default';
+      byId('defaultBrightness').value = Math.round((state.config.defaultBrightness != null ? state.config.defaultBrightness : 0.15) * 100);
       byId('sendOnStartup').checked = !!state.config.sendOnStartup;
       byId('syncVolumes').checked = !!state.config.syncVolumes;
 
@@ -371,8 +445,7 @@ const configUIHTML = `<!doctype html>
       renderProfiles();
       renderConnection();
       renderBackground();
-      renderSliders();
-      renderColors();
+      switchTab(state.config.activePage || 'left');
 
       status('Ready');
     }
@@ -415,6 +488,12 @@ const configUIHTML = `<!doctype html>
     byId('reload').onclick = () => loadState().catch((err) => status(err.message, true));
     byId('saveProfile').onclick = () => saveProfile().catch((err) => status(err.message, true));
     byId('loadProfile').onclick = () => loadProfile().catch((err) => status(err.message, true));
+
+    byId('tabLeft').onclick = () => switchTab('left');
+    byId('tabRight').onclick = () => switchTab('right');
+
+    byId('pageBtnColor').onchange = () => { pageData[activeTab].btnColor = byId('pageBtnColor').value; };
+    byId('pageBtnOffColor').onchange = () => { pageData[activeTab].btnOffColor = byId('pageBtnOffColor').value; };
 
     byId('usePort').onclick = () => {
       const selected = byId('portSelect').value;

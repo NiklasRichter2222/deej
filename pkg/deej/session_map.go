@@ -46,8 +46,7 @@ const (
 
 	// this threshold constant assumes that re-acquiring all sessions is a kind of expensive operation,
 	// and needs to be limited in some manner. this value was previously user-configurable through a config
-	// key "process_refresh_frequency", but exposing this type of implementation detail seems wrong now
-	minTimeBetweenSessionRefreshes = time.Second * 5
+	minTimeBetweenSessionRefreshes = time.Second * 1
 
 	// smallest interval between forced refreshes when the current window target is in play
 	currentTargetForceRefreshCooldown = time.Millisecond * 500
@@ -453,8 +452,17 @@ func (m *sessionMap) ToggleSliderMute(sliderIdx int) error {
 	return nil
 }
 
+func (m *sessionMap) SetActivePage(page string) {
+	m.logger.Infow("Active page switched", "page", page)
+	m.refreshSessions(true)
+	if m.deej.config.SyncVolumes {
+		m.syncAllSliderVolumes()
+	}
+}
+
 func (m *sessionMap) setupSliderVolumeSync() {
 	const syncInterval = 500 * time.Millisecond
+	syncTicks := 0
 
 	go func() {
 		ticker := time.NewTicker(syncInterval)
@@ -466,12 +474,39 @@ func (m *sessionMap) setupSliderVolumeSync() {
 				if !m.deej.config.SyncVolumes {
 					continue
 				}
+				syncTicks++
+				// Every 2 seconds (4 ticks), check if any mapped targets are missing and refresh sessions
+				if syncTicks%4 == 0 && m.hasMissingMappedTargets() {
+					m.refreshSessions(false)
+				}
 				m.syncAllSliderVolumes()
 			case <-m.sliderSyncStop:
 				return
 			}
 		}
 	}()
+}
+
+func (m *sessionMap) hasMissingMappedTargets() bool {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	missing := false
+	m.deej.config.SliderMapping.iterate(func(sliderIdx int, targets []string) {
+		for _, target := range targets {
+			if m.targetHasSpecialTransform(target) {
+				continue
+			}
+			resolved := m.resolveTarget(target)
+			for _, r := range resolved {
+				if _, ok := m.m[r]; !ok {
+					missing = true
+					return
+				}
+			}
+		}
+	})
+	return missing
 }
 
 func (m *sessionMap) syncAllSliderVolumes() {
