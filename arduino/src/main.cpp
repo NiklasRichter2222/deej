@@ -70,8 +70,8 @@ struct EncoderInfo {
   const int *ledOrder;
   uint8_t ledOrderLength;
   RotaryEncoder *encoder;
-  long lastDetentPosition;
-  bool isMuted;
+  long lastDetentPosition[2];
+  bool isMuted[2];
   uint8_t lastButtonState;
   unsigned long lastDebounceTime;
 
@@ -79,8 +79,10 @@ struct EncoderInfo {
               const int *order, uint8_t orderLen)
       : name(n), btn_pin(b), rotA_pin(ra), rotB_pin(rb), startLed(sLed),
         ledOrder(order), ledOrderLength(orderLen) {
-    lastDetentPosition = 0;
-    isMuted = false;
+    lastDetentPosition[0] = 0;
+    lastDetentPosition[1] = 0;
+    isMuted[0] = false;
+    isMuted[1] = false;
     lastButtonState = HIGH;
     lastDebounceTime = 0;
     encoder = nullptr;
@@ -235,7 +237,7 @@ void loop() {
   for (int i = 0; i < numEncoders; i++) {
     long currentDetentPosition = encoders[i].encoder->getPosition();
 
-    if (currentDetentPosition != encoders[i].lastDetentPosition) {
+    if (currentDetentPosition != encoders[i].lastDetentPosition[currentPage]) {
       if (currentDetentPosition > MAX_ENCODER_VALUE) {
         currentDetentPosition = MAX_ENCODER_VALUE;
         encoders[i].encoder->setPosition(MAX_ENCODER_VALUE);
@@ -243,7 +245,7 @@ void loop() {
         currentDetentPosition = 0;
         encoders[i].encoder->setPosition(0);
       }
-      encoders[i].lastDetentPosition = currentDetentPosition;
+      encoders[i].lastDetentPosition[currentPage] = currentDetentPosition;
       needsRender = true;
     }
   }
@@ -256,8 +258,8 @@ void loop() {
       encoders[i].lastDebounceTime = millis();
       encoders[i].lastButtonState = reading;
       if (reading == LOW) {
-        encoders[i].isMuted = !encoders[i].isMuted;
-        Serial.printf("M:%d\n", i);
+        encoders[i].isMuted[currentPage] = !encoders[i].isMuted[currentPage];
+        Serial.printf("M:%d\n", i + (currentPage * numEncoders));
         needsRender = true;
       }
     }
@@ -299,12 +301,18 @@ void loop() {
         } else if (i == 1) { // Rul -> Page Left (Page 0)
           if (currentPage != 0) {
             currentPage = 0;
-            Serial.println("P:0");
+            for (int e = 0; e < numEncoders; e++) {
+              encoders[e].encoder->setPosition(encoders[e].lastDetentPosition[0]);
+            }
+            needsRender = true;
           }
         } else if (i == 3) { // Rur -> Page Right (Page 1)
           if (currentPage != 1) {
             currentPage = 1;
-            Serial.println("P:1");
+            for (int e = 0; e < numEncoders; e++) {
+              encoders[e].encoder->setPosition(encoders[e].lastDetentPosition[1]);
+            }
+            needsRender = true;
           }
         }
       }
@@ -343,12 +351,14 @@ void loop() {
   if (millis() - lastDeejSendTime >= DEEJ_SEND_INTERVAL) {
     lastDeejSendTime = millis();
     String payload = "";
-    for (int i = 0; i < numEncoders; i++) {
-      long mappedValue =
-          map(encoders[i].lastDetentPosition, 0, MAX_ENCODER_VALUE, 0, 1023);
-      payload += String(mappedValue);
-      if (i < numEncoders - 1)
-        payload += "|";
+    for (int p = 0; p < 2; p++) {
+      for (int i = 0; i < numEncoders; i++) {
+        long mappedValue =
+            map(encoders[i].lastDetentPosition[p], 0, MAX_ENCODER_VALUE, 0, 1023);
+        payload += String(mappedValue);
+        if (p < 1 || i < numEncoders - 1)
+          payload += "|";
+      }
     }
     Serial.println(payload);
   }
@@ -366,10 +376,14 @@ void processDeejSerial() {
       if (c1 != -1 && c2 != -1) {
         int idx = line.substring(c1 + 1, c2).toInt();
         float percent = line.substring(c2 + 1).toFloat();
-        if (idx >= 0 && idx < numEncoders) {
+        int p = idx / numEncoders;
+        int e = idx % numEncoders;
+        if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
           long newPos = round(percent * MAX_ENCODER_VALUE);
-          encoders[idx].lastDetentPosition = newPos;
-          encoders[idx].encoder->setPosition(newPos);
+          encoders[e].lastDetentPosition[p] = newPos;
+          if (currentPage == p) {
+            encoders[e].encoder->setPosition(newPos);
+          }
           renderLEDs();
         }
       }
@@ -379,18 +393,12 @@ void processDeejSerial() {
       if (c1 != -1 && c2 != -1) {
         int idx = line.substring(c1 + 1, c2).toInt();
         int muted = line.substring(c2 + 1).toInt();
-        if (idx >= 0 && idx < numEncoders) {
-          encoders[idx].isMuted = (muted == 1);
+        int p = idx / numEncoders;
+        int e = idx % numEncoders;
+        if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
+          encoders[e].isMuted[p] = (muted == 1);
           renderLEDs();
         }
-      }
-    } else if (line.startsWith("P:")) {
-      String pageStr = line.substring(2);
-      pageStr.trim();
-      int p = (pageStr == "1" || pageStr.equalsIgnoreCase("right")) ? 1 : 0;
-      if (currentPage != p) {
-        currentPage = p;
-        renderLEDs();
       }
     } else if (line.startsWith("CP:")) {
       int c1 = line.indexOf(':');
@@ -409,26 +417,14 @@ void processDeejSerial() {
       int c1 = line.indexOf(':');
       int c2 = line.indexOf(':', c1 + 1);
       int c3 = line.indexOf(':', c2 + 1);
-      int c4 = line.indexOf(':', c3 + 1);
 
-      if (c1 != -1 && c2 != -1 && c3 != -1 && c4 != -1) {
-        String pStr = line.substring(c1 + 1, c2);
-        int p = (pStr == "1" || pStr.equalsIgnoreCase("R") || pStr.equalsIgnoreCase("right")) ? 1 : 0;
-        int idx = line.substring(c2 + 1, c3).toInt();
-        if (idx >= 0 && idx < numEncoders) {
-          pageZeroColor[p][idx] = parseHexColor(line.substring(c3 + 1, c4));
-          pageFullColor[p][idx] = parseHexColor(line.substring(c4 + 1));
-          renderLEDs();
-        }
-      } else if (c1 != -1 && c2 != -1 && c3 != -1) {
+      if (c1 != -1 && c2 != -1 && c3 != -1) {
         int idx = line.substring(c1 + 1, c2).toInt();
-        if (idx >= 0 && idx < numEncoders) {
-          Color z = parseHexColor(line.substring(c2 + 1, c3));
-          Color f = parseHexColor(line.substring(c3 + 1));
-          pageZeroColor[0][idx] = z;
-          pageFullColor[0][idx] = f;
-          pageZeroColor[1][idx] = z;
-          pageFullColor[1][idx] = f;
+        int p = idx / numEncoders;
+        int e = idx % numEncoders;
+        if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
+          pageZeroColor[p][e] = parseHexColor(line.substring(c2 + 1, c3));
+          pageFullColor[p][e] = parseHexColor(line.substring(c3 + 1));
           renderLEDs();
         }
       }
@@ -483,13 +479,13 @@ void renderLEDs() {
     uint8_t orderLength =
         (enc.ledOrderLength > 0) ? enc.ledOrderLength : ENCODER_LED_COUNT;
 
-    float percent = (float)enc.lastDetentPosition / MAX_ENCODER_VALUE;
+    float percent = (float)enc.lastDetentPosition[currentPage] / MAX_ENCODER_VALUE;
 
     Color zeroC = pageZeroColor[currentPage][e];
     Color fullC = pageFullColor[currentPage][e];
 
     Color activeColor;
-    if (enc.isMuted) {
+    if (enc.isMuted[currentPage]) {
       activeColor = COLOR_RED;
     } else {
       activeColor.r = zeroC.r + (fullC.r - zeroC.r) * percent;
@@ -498,7 +494,7 @@ void renderLEDs() {
     }
 
     float ledFill = percent * orderLength;
-    if (enc.isMuted && ledFill < 1.0) {
+    if (enc.isMuted[currentPage] && ledFill < 1.0) {
       ledFill = 1.0;
     }
     int fullLeds = (int)ledFill;

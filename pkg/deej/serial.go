@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,7 +53,7 @@ type SliderMoveEvent struct {
 	PercentValue float32
 }
 
-var expectedLinePattern = regexp.MustCompile(`^\d{1,4}(\|\d{1,4})*$`)
+// Regex removed for performance
 
 // NewSerialIO creates a SerialIO instance that uses the provided deej
 // instance's connection info to establish communications with the arduino chip
@@ -129,24 +128,32 @@ func (sio *SerialIO) Start() error {
 		sio.deej.sessions.refreshSessions(true)
 	}
 
-	if err := sio.sendLightingConfiguration(namedLogger); err != nil {
-		namedLogger.Warnw("Failed to send lighting configuration", "error", err)
-	}
-
-	if err := sio.sendInitialSliderVolumes(namedLogger); err != nil {
-		namedLogger.Warnw("Failed to send initial slider volumes", "error", err)
-	}
-
 	// read lines or await a stop
 	go func() {
 		connReader := bufio.NewReader(sio.conn)
 		lineChannel := sio.readLine(namedLogger, connReader)
 
+		firstLineReceived := false
+
 		for {
 			select {
 			case <-sio.stopChannel:
 				sio.close(namedLogger)
+				return
 			case line := <-lineChannel:
+				if !firstLineReceived {
+					firstLineReceived = true
+					
+					// Send configuration only after we know the Arduino is fully awake and streaming
+					if err := sio.sendLightingConfiguration(namedLogger); err != nil {
+						namedLogger.Warnw("Failed to send lighting configuration", "error", err)
+					}
+
+					if err := sio.sendInitialSliderVolumes(namedLogger); err != nil {
+						namedLogger.Warnw("Failed to send initial slider volumes", "error", err)
+					}
+				}
+				
 				sio.handleLine(namedLogger, line)
 			}
 		}
@@ -280,14 +287,15 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 		return
 	}
 
-	if sio.tryHandlePageCommand(logger, sanitized) {
+	// fast validation: check if the string contains only digits and pipes, and doesn't start/end with pipe
+	if len(sanitized) == 0 || sanitized[0] == '|' || sanitized[len(sanitized)-1] == '|' {
 		return
 	}
-
-	// may have garbage instead of deej-formatted values, so we must check for that!
-	// just ignore bad ones
-	if !expectedLinePattern.MatchString(sanitized) {
-		return
+	for i := 0; i < len(sanitized); i++ {
+		c := sanitized[i]
+		if (c < '0' || c > '9') && c != '|' {
+			return
+		}
 	}
 
 	// split on pipe (|), this gives a slice of numerical strings between "0" and "1023"
@@ -401,29 +409,6 @@ func (sio *SerialIO) tryHandleMuteCommand(logger *zap.SugaredLogger, line string
 	return true
 }
 
-func (sio *SerialIO) tryHandlePageCommand(logger *zap.SugaredLogger, line string) bool {
-	if len(line) < 3 {
-		return false
-	}
-
-	if (line[0] != 'P' && line[0] != 'p') || line[1] != ':' {
-		return false
-	}
-
-	payload := strings.TrimSpace(line[2:])
-	page := "left"
-	if payload == "1" || strings.EqualFold(payload, "right") || strings.EqualFold(payload, "r") {
-		page = "right"
-	}
-
-	if sio.deej.Verbose() {
-		logger.Debugw("Received page switch from controller", "payload", payload, "page", page)
-	}
-
-	sio.deej.SetActivePage(page)
-	return true
-}
-
 func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error {
 	if !sio.deej.config.SendOnStartup {
 		return nil
@@ -435,12 +420,14 @@ func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error 
 
 	// Send default brightness
 	_ = sio.writeSerialLine(fmt.Sprintf("BR:%.2f", sio.deej.config.DefaultBrightness))
+	time.Sleep(10 * time.Millisecond)
 
 	background := strings.TrimSpace(sio.deej.config.BackgroundLighting)
 	if background != "" {
 		if err := sio.writeSerialLine(fmt.Sprintf("B:%s", background)); err != nil {
 			return fmt.Errorf("send background lighting: %w", err)
 		}
+		time.Sleep(10 * time.Millisecond)
 
 		if sio.deej.Verbose() {
 			logger.Debugw("Sent background lighting", "value", background)
@@ -467,44 +454,25 @@ func (sio *SerialIO) sendLightingConfiguration(logger *zap.SugaredLogger) error 
 	}
 
 	_ = sio.writeSerialLine(fmt.Sprintf("CP:0:%s:%s", leftBtnColor, leftBtnOffColor))
+	time.Sleep(10 * time.Millisecond)
 	_ = sio.writeSerialLine(fmt.Sprintf("CP:1:%s:%s", rightBtnColor, rightBtnOffColor))
+	time.Sleep(10 * time.Millisecond)
 
-	// Send Left page slider colors
-	leftIndices := make([]int, 0, len(sio.deej.config.ColorMappingLeft))
-	for idx := range sio.deej.config.ColorMappingLeft {
-		leftIndices = append(leftIndices, idx)
+	// Send slider colors
+	indices := make([]int, 0, len(sio.deej.config.ColorMapping))
+	for idx := range sio.deej.config.ColorMapping {
+		indices = append(indices, idx)
 	}
-	sort.Ints(leftIndices)
-	for _, idx := range leftIndices {
-		entry := sio.deej.config.ColorMappingLeft[idx]
+	sort.Ints(indices)
+	for _, idx := range indices {
+		entry := sio.deej.config.ColorMapping[idx]
 		zero := strings.TrimSpace(entry.Zero)
 		full := strings.TrimSpace(entry.Full)
 		if zero != "" && full != "" {
-			_ = sio.writeSerialLine(fmt.Sprintf("C:0:%d:%s:%s", idx, zero, full))
+			_ = sio.writeSerialLine(fmt.Sprintf("C:%d:%s:%s", idx, zero, full))
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
-
-	// Send Right page slider colors
-	rightIndices := make([]int, 0, len(sio.deej.config.ColorMappingRight))
-	for idx := range sio.deej.config.ColorMappingRight {
-		rightIndices = append(rightIndices, idx)
-	}
-	sort.Ints(rightIndices)
-	for _, idx := range rightIndices {
-		entry := sio.deej.config.ColorMappingRight[idx]
-		zero := strings.TrimSpace(entry.Zero)
-		full := strings.TrimSpace(entry.Full)
-		if zero != "" && full != "" {
-			_ = sio.writeSerialLine(fmt.Sprintf("C:1:%d:%s:%s", idx, zero, full))
-		}
-	}
-
-	// Send active page (0 = left, 1 = right)
-	activePageNum := 0
-	if sio.deej.config.ActivePage == "right" {
-		activePageNum = 1
-	}
-	_ = sio.writeSerialLine(fmt.Sprintf("P:%d", activePageNum))
 
 	return nil
 }
@@ -546,12 +514,14 @@ func (sio *SerialIO) sendInitialSliderVolumes(logger *zap.SugaredLogger) error {
 		if err := sio.SendSliderDisplayValue(idx, volume); err != nil {
 			return fmt.Errorf("send initial volume for slider %d: %w", idx, err)
 		}
+		time.Sleep(5 * time.Millisecond)
 
 		muted, ok := sio.deej.sessions.sliderMute(idx)
 		if ok {
 			if err := sio.SendSliderMute(idx, muted); err != nil {
 				return fmt.Errorf("send initial mute for slider %d: %w", idx, err)
 			}
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 
@@ -649,6 +619,10 @@ func (sio *SerialIO) resetSliderDisplayCache() {
 func (sio *SerialIO) writeSerialLine(payload string) error {
 	if !strings.HasSuffix(payload, "\r\n") {
 		payload += "\r\n"
+	}
+	
+	if sio.deej.Verbose() || true {
+		sio.logger.Infow("writing to serial", "payload", payload)
 	}
 
 	_, err := sio.conn.Write([]byte(payload))

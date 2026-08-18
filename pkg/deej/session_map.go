@@ -451,15 +451,7 @@ func (m *sessionMap) ToggleSliderMute(sliderIdx int) error {
 
 	return nil
 }
-
-func (m *sessionMap) SetActivePage(page string) {
-	m.logger.Infow("Active page switched", "page", page)
-	m.refreshSessions(true)
-	if m.deej.config.SyncVolumes {
-		m.syncAllSliderVolumes()
-	}
-}
-
+// SetActivePage removed.
 func (m *sessionMap) setupSliderVolumeSync() {
 	const syncInterval = 500 * time.Millisecond
 	syncTicks := 0

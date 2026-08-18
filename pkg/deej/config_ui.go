@@ -313,7 +313,7 @@ func (s *configUIService) handleLoadProfile(w http.ResponseWriter, r *http.Reque
 func (s *configUIService) currentConfig() configUIConfig {
 	cfg := configUIConfig{
 		SliderCount:        s.deej.config.SliderCount,
-		ActivePage:         s.deej.config.ActivePage,
+		ActivePage:         "left",
 		COMPort:            s.deej.config.ConnectionInfo.COMPort,
 		BaudRate:           s.deej.config.ConnectionInfo.BaudRate,
 		InvertSliders:      s.deej.config.InvertSliders,
@@ -336,41 +336,33 @@ func (s *configUIService) currentConfig() configUIConfig {
 		},
 	}
 
-	if s.deej.config.SliderMappingLeft != nil {
-		s.deej.config.SliderMappingLeft.iterate(func(sliderIdx int, targets []string) {
+	if s.deej.config.SliderMapping != nil {
+		s.deej.config.SliderMapping.iterate(func(sliderIdx int, targets []string) {
 			clean := make([]string, len(targets))
 			copy(clean, targets)
-			cfg.Left.SliderMapping[strconv.Itoa(sliderIdx)] = clean
-		})
-	}
-	if s.deej.config.SliderMappingRight != nil {
-		s.deej.config.SliderMappingRight.iterate(func(sliderIdx int, targets []string) {
-			clean := make([]string, len(targets))
-			copy(clean, targets)
-			cfg.Right.SliderMapping[strconv.Itoa(sliderIdx)] = clean
+			if sliderIdx < cfg.SliderCount {
+				cfg.Left.SliderMapping[strconv.Itoa(sliderIdx)] = clean
+			} else {
+				cfg.Right.SliderMapping[strconv.Itoa(sliderIdx-cfg.SliderCount)] = clean
+			}
 		})
 	}
 
-	for idx, entry := range s.deej.config.ColorMappingLeft {
+	for idx, entry := range s.deej.config.ColorMapping {
 		mode := "gradient"
 		if strings.EqualFold(strings.TrimSpace(entry.Zero), strings.TrimSpace(entry.Full)) {
 			mode = "single"
 		}
-		cfg.Left.ColorMapping[strconv.Itoa(idx)] = configUISliderColorMap{
+		
+		cMap := configUISliderColorMap{
 			Mode: mode,
 			Zero: entry.Zero,
 			Full: entry.Full,
 		}
-	}
-	for idx, entry := range s.deej.config.ColorMappingRight {
-		mode := "gradient"
-		if strings.EqualFold(strings.TrimSpace(entry.Zero), strings.TrimSpace(entry.Full)) {
-			mode = "single"
-		}
-		cfg.Right.ColorMapping[strconv.Itoa(idx)] = configUISliderColorMap{
-			Mode: mode,
-			Zero: entry.Zero,
-			Full: entry.Full,
+		if idx < cfg.SliderCount {
+			cfg.Left.ColorMapping[strconv.Itoa(idx)] = cMap
+		} else {
+			cfg.Right.ColorMapping[strconv.Itoa(idx-cfg.SliderCount)] = cMap
 		}
 	}
 

@@ -26,12 +26,8 @@ type SliderColorConfig struct {
 }
 
 type CanonicalConfig struct {
-	SliderMappingLeft  *sliderMap
-	SliderMappingRight *sliderMap
-	SliderMapping      *sliderMap // points to current active page slider map
+	SliderMapping      *sliderMap
 	SliderCount        int
-
-	ActivePage string // "left" or "right"
 
 	ConnectionInfo struct {
 		COMPort  string
@@ -45,9 +41,7 @@ type CanonicalConfig struct {
 	DefaultBrightness  float64
 	SendOnStartup      bool
 	SyncVolumes        bool
-	ColorMappingLeft   map[int]SliderColorConfig
-	ColorMappingRight  map[int]SliderColorConfig
-	ColorMapping       map[int]SliderColorConfig // points to current active page color map
+	ColorMapping       map[int]SliderColorConfig
 	BackgroundLighting string
 
 	PageButtonLeftColor     string
@@ -112,7 +106,6 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 	cc := &CanonicalConfig{
 		logger:                  logger,
 		notifier:                notifier,
-		ActivePage:              "left",
 		DefaultBrightness:       0.15,
 		PageButtonLeftColor:     "#ffffff",
 		PageButtonLeftOffColor:  "#000000",
@@ -231,25 +224,8 @@ func (cc *CanonicalConfig) StopWatchingConfigFile() {
 	cc.stopWatcherChannel <- true
 }
 
-func (cc *CanonicalConfig) SetActivePage(page string) {
-	page = strings.ToLower(strings.TrimSpace(page))
-	if page != "right" {
-		page = "left"
-	}
-	cc.ActivePage = page
-	if page == "right" {
-		cc.SliderMapping = cc.SliderMappingRight
-		cc.ColorMapping = cc.ColorMappingRight
-	} else {
-		cc.SliderMapping = cc.SliderMappingLeft
-		cc.ColorMapping = cc.ColorMappingLeft
-	}
-}
-
 func (cc *CanonicalConfig) populateFromVipers() error {
 	leftSliderMap, rightSliderMap := cc.parseSliderMappings()
-	cc.SliderMappingLeft = leftSliderMap
-	cc.SliderMappingRight = rightSliderMap
 
 	cc.ConnectionInfo.COMPort = cc.userConfig.GetString(configKeyCOMPort)
 	cc.ConnectionInfo.BaudRate = cc.userConfig.GetInt(configKeyBaudRate)
@@ -282,20 +258,34 @@ func (cc *CanonicalConfig) populateFromVipers() error {
 	cc.DefaultBrightness = rawBrightness
 
 	cLeft, cRight, btnLeft, btnLeftOff, btnRight, btnRightOff := cc.parseColorMappings()
-	cc.ColorMappingLeft = cLeft
-	cc.ColorMappingRight = cRight
+
+	cc.SliderCount = cc.userConfig.GetInt(configKeySliderCount)
+	if cc.SliderCount <= 0 {
+		cc.SliderCount = cc.inferSliderCount(leftSliderMap, rightSliderMap, cLeft, cRight)
+	}
+
+	cc.SliderMapping = newSliderMap()
+	leftSliderMap.iterate(func(idx int, targets []string) {
+		cc.SliderMapping.set(idx, targets)
+	})
+	rightSliderMap.iterate(func(idx int, targets []string) {
+		cc.SliderMapping.set(idx+cc.SliderCount, targets)
+	})
+
+	cc.ColorMapping = make(map[int]SliderColorConfig)
+	for k, v := range cLeft {
+		cc.ColorMapping[k] = v
+	}
+	for k, v := range cRight {
+		cc.ColorMapping[k+cc.SliderCount] = v
+	}
+
 	cc.PageButtonLeftColor = btnLeft
 	cc.PageButtonLeftOffColor = btnLeftOff
 	cc.PageButtonRightColor = btnRight
 	cc.PageButtonRightOffColor = btnRightOff
 
-	cc.SliderCount = cc.userConfig.GetInt(configKeySliderCount)
-	if cc.SliderCount <= 0 {
-		cc.SliderCount = cc.inferSliderCount()
-	}
 	cc.BackgroundLighting = strings.TrimSpace(cc.userConfig.GetString(configKeyBackgroundLighting))
-
-	cc.SetActivePage(cc.ActivePage)
 
 	cc.logger.Debug("Populated config fields from vipers")
 	return nil
@@ -416,29 +406,29 @@ func (cc *CanonicalConfig) parseColorMappings() (map[int]SliderColorConfig, map[
 	return leftResult, rightResult, leftColor, leftOffColor, rightColor, rightOffColor
 }
 
-func (cc *CanonicalConfig) inferSliderCount() int {
+func (cc *CanonicalConfig) inferSliderCount(leftSliderMap *sliderMap, rightSliderMap *sliderMap, cLeft map[int]SliderColorConfig, cRight map[int]SliderColorConfig) int {
 	maxSliderIdx := -1
-	if cc.SliderMappingLeft != nil {
-		cc.SliderMappingLeft.iterate(func(sliderIdx int, _ []string) {
+	if leftSliderMap != nil {
+		leftSliderMap.iterate(func(sliderIdx int, _ []string) {
 			if sliderIdx > maxSliderIdx {
 				maxSliderIdx = sliderIdx
 			}
 		})
 	}
-	if cc.SliderMappingRight != nil {
-		cc.SliderMappingRight.iterate(func(sliderIdx int, _ []string) {
+	if rightSliderMap != nil {
+		rightSliderMap.iterate(func(sliderIdx int, _ []string) {
 			if sliderIdx > maxSliderIdx {
 				maxSliderIdx = sliderIdx
 			}
 		})
 	}
 
-	for sliderIdx := range cc.ColorMappingLeft {
+	for sliderIdx := range cLeft {
 		if sliderIdx > maxSliderIdx {
 			maxSliderIdx = sliderIdx
 		}
 	}
-	for sliderIdx := range cc.ColorMappingRight {
+	for sliderIdx := range cRight {
 		if sliderIdx > maxSliderIdx {
 			maxSliderIdx = sliderIdx
 		}

@@ -40,7 +40,7 @@ background_lighting: rgb
 color_mapping:
   left:
     color: '#ffffff'
-    offcolor: '#000000'
+    offcolor: '#ff0000'
     0:
       zero: '#00ffff'
       full: '#ff0000'
@@ -61,7 +61,7 @@ color_mapping:
       full: '#00ff00'
   right:
     color: '#ffffff'
-    offcolor: '#000000'
+    offcolor: '#00ff00'
     0:
       zero: '#00ffff'
       full: '#ff0000'

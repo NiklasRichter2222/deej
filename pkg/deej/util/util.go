@@ -61,7 +61,11 @@ func GetCurrentWindowProcessNames() ([]string, error) {
 func OpenExternal(logger *zap.SugaredLogger, cmd string, arg string) error {
 
 	// use cmd for windows, bash for linux
-	execCommandArgs := []string{"cmd.exe", "/C", "start", "/b", cmd, arg}
+	comspec := os.Getenv("COMSPEC")
+	if comspec == "" {
+		comspec = "cmd.exe"
+	}
+	execCommandArgs := []string{comspec, "/C", "start", "/b", cmd, arg}
 	if Linux() {
 		execCommandArgs = []string{"/bin/bash", "-c", fmt.Sprintf("%s %s", cmd, arg)}
 	}
@@ -87,7 +91,7 @@ func OpenURL(logger *zap.SugaredLogger, url string) error {
 	if Linux() {
 		command = exec.Command("xdg-open", url)
 	} else if Windows() {
-		command = exec.Command("cmd.exe", "/C", "start", "", url)
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	} else {
 		return fmt.Errorf("open url: unsupported platform")
 	}
