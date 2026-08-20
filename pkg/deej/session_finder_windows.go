@@ -6,6 +6,7 @@ package deej
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -68,10 +69,13 @@ func newSessionFinder(logger *zap.SugaredLogger) (SessionFinder, error) {
 }
 
 func (sf *wcaSessionFinder) GetAllSessions() ([]Session, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	sessions := []Session{}
 
 	// we must call this every time we're about to list devices, i think. could be wrong
-	if err := ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED); err != nil {
+	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
 
 		// if the error is "Incorrect function" that corresponds to 0x00000001,
 		// which represents E_FALSE in COM error handling. this is fine for this function,

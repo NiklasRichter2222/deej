@@ -3,11 +3,13 @@ package deej
 import (
 	"fmt"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	ole "github.com/go-ole/go-ole"
 	"github.com/omriharel/deej/pkg/deej/util"
 	"github.com/thoas/go-funk"
 	"go.uber.org/zap"
@@ -145,6 +147,8 @@ func (m *sessionMap) setupOnConfigReload() {
 	configReloadedChannel := m.deej.config.SubscribeToChanges()
 
 	go func() {
+		runtime.LockOSThread()
+		ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 		for {
 			select {
 			case <-configReloadedChannel:
@@ -159,6 +163,8 @@ func (m *sessionMap) setupOnSliderMove() {
 	sliderEventsChannel := m.deej.serial.SubscribeToSliderMoveEvents()
 
 	go func() {
+		runtime.LockOSThread()
+		ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 		for {
 			select {
 			case event := <-sliderEventsChannel:
@@ -457,6 +463,8 @@ func (m *sessionMap) setupSliderVolumeSync() {
 	syncTicks := 0
 
 	go func() {
+		runtime.LockOSThread()
+		ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 		ticker := time.NewTicker(syncInterval)
 		defer ticker.Stop()
 

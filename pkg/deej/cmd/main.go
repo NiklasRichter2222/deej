@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"runtime"
 
 	"github.com/omriharel/deej/pkg/deej"
+	ole "github.com/go-ole/go-ole"
 )
 
 var (
@@ -22,6 +24,8 @@ func init() {
 }
 
 func main() {
+	runtime.LockOSThread()
+	ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 
 	// first we need a logger
 	logger, err := deej.NewLogger(buildType)

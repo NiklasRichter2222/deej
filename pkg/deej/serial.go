@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	ole "github.com/go-ole/go-ole"
 	"github.com/jacobsa/go-serial/serial"
 	"go.uber.org/zap"
 
@@ -130,6 +132,8 @@ func (sio *SerialIO) Start() error {
 
 	// read lines or await a stop
 	go func() {
+		runtime.LockOSThread()
+		ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 		connReader := bufio.NewReader(sio.conn)
 		lineChannel := sio.readLine(namedLogger, connReader)
 
