@@ -19,6 +19,32 @@ var (
 	lastGetCurrentWindowCall   = time.Now()
 )
 
+type enumChildWindowsContext struct {
+	ownerPID uint32
+	results  []string
+}
+
+var (
+	enumChildWindowsCallback = syscall.NewCallback(func(childHWND win.HWND, lParam uintptr) uintptr {
+		ctx := (*enumChildWindowsContext)(unsafe.Pointer(lParam))
+		if ctx == nil {
+			return 1
+		}
+
+		var childPID uint32
+		win.GetWindowThreadProcessId(childHWND, &childPID)
+
+		if childPID != 0 && childPID != ctx.ownerPID {
+			actualProcess, err := ps.FindProcess(int(childPID))
+			if err == nil && actualProcess != nil {
+				ctx.results = append(ctx.results, actualProcess.Executable())
+			}
+		}
+
+		return 1
+	})
+)
+
 func getCurrentWindowProcessNames() ([]string, error) {
 
 	// apply an internal cooldown on this function to avoid calling windows API functions too frequently.
@@ -40,32 +66,6 @@ func getCurrentWindowProcessNames() ([]string, error) {
 	// them up is fairly cheap and covers the most bases for apps that hide their audio-playing inside another process
 	// (like steam, and the league client, and any UWP app)
 
-	result := []string{}
-
-	// a callback that will be called for each child window of the foreground window, if it has any
-	enumChildWindowsCallback := func(childHWND *uintptr, lParam *uintptr) uintptr {
-
-		// cast the outer lp into something we can work with (maybe closures are good enough?)
-		ownerPID := (*uint32)(unsafe.Pointer(lParam))
-
-		// get the child window's real PID
-		var childPID uint32
-		win.GetWindowThreadProcessId((win.HWND)(unsafe.Pointer(childHWND)), &childPID)
-
-		// compare it to the parent's - if they're different, add the child window's process to our list of process names
-		if childPID != *ownerPID {
-
-			// warning: this can silently fail, needs to be tested more thoroughly and possibly reverted in the future
-			actualProcess, err := ps.FindProcess(int(childPID))
-			if err == nil {
-				result = append(result, actualProcess.Executable())
-			}
-		}
-
-		// indicates to the system to keep iterating
-		return 1
-	}
-
 	// get the current foreground window
 	hwnd := win.GetForegroundWindow()
 	var ownerPID uint32
@@ -84,13 +84,15 @@ func getCurrentWindowProcessNames() ([]string, error) {
 		return nil, fmt.Errorf("get parent process for pid %d: %w", ownerPID, err)
 	}
 
-	// add it to our result slice
-	result = append(result, process.Executable())
+	ctx := &enumChildWindowsContext{
+		ownerPID: ownerPID,
+		results:  []string{process.Executable()},
+	}
 
-	// iterate its child windows, adding their names too
-	win.EnumChildWindows(hwnd, syscall.NewCallback(enumChildWindowsCallback), (uintptr)(unsafe.Pointer(&ownerPID)))
+	// iterate its child windows, adding their names too using the static callback
+	win.EnumChildWindows(hwnd, enumChildWindowsCallback, uintptr(unsafe.Pointer(ctx)))
 
 	// cache & return whichever executable names we ended up with
-	lastGetCurrentWindowResult = result
-	return result, nil
+	lastGetCurrentWindowResult = ctx.results
+	return ctx.results, nil
 }

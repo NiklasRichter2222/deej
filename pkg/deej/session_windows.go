@@ -62,8 +62,7 @@ func newWCASession(
 		process, err := ps.FindProcess(int(pid))
 		if err != nil {
 			logger.Warnw("Failed to find process name by ID", "pid", pid, "error", err)
-			defer s.Release()
-
+			s.Release()
 			return nil, fmt.Errorf("find process name by pid: %w", err)
 		}
 
@@ -71,6 +70,7 @@ func newWCASession(
 		// closed and we shouldn't create a session for it.
 		if process == nil {
 			logger.Debugw("Process already exited, not creating audio session", "pid", pid)
+			s.Release()
 			return nil, errNoSuchProcess
 		}
 
@@ -110,8 +110,11 @@ func newMasterSession(
 }
 
 func (s *wcaSession) GetVolume() float32 {
-	var level float32
+	if s.volume == nil {
+		return 0
+	}
 
+	var level float32
 	if err := s.volume.GetMasterVolume(&level); err != nil {
 		s.logger.Warnw("Failed to get session volume", "error", err)
 	}
@@ -120,14 +123,21 @@ func (s *wcaSession) GetVolume() float32 {
 }
 
 func (s *wcaSession) SetVolume(v float32) error {
+	if s.volume == nil {
+		return errors.New("wca session volume is nil")
+	}
+
 	if err := s.volume.SetMasterVolume(v, s.eventCtx); err != nil {
 		s.logger.Warnw("Failed to set session volume", "error", err)
 		return fmt.Errorf("adjust session volume: %w", err)
 	}
 
+	if s.control == nil {
+		return nil
+	}
+
 	// mitigate expired sessions by checking the state whenever we change volumes
 	var state uint32
-
 	if err := s.control.GetState(&state); err != nil {
 		s.logger.Warnw("Failed to get session state while setting volume", "error", err)
 		return fmt.Errorf("get session state: %w", err)
@@ -139,11 +149,14 @@ func (s *wcaSession) SetVolume(v float32) error {
 	}
 
 	s.logger.Debugw("Adjusting session volume", "to", fmt.Sprintf("%.2f", v))
-
 	return nil
 }
 
 func (s *wcaSession) GetMute() bool {
+	if s.volume == nil {
+		return false
+	}
+
 	var muted bool
 	if err := s.volume.GetMute(&muted); err != nil {
 		s.logger.Warnw("Failed to get session mute", "error", err)
@@ -154,14 +167,21 @@ func (s *wcaSession) GetMute() bool {
 }
 
 func (s *wcaSession) SetMute(m bool) error {
+	if s.volume == nil {
+		return errors.New("wca session volume is nil")
+	}
+
 	if err := s.volume.SetMute(m, s.eventCtx); err != nil {
 		s.logger.Warnw("Failed to set session mute", "error", err)
 		return fmt.Errorf("adjust session mute: %w", err)
 	}
 
+	if s.control == nil {
+		return nil
+	}
+
 	// mitigate expired sessions by checking the state whenever we change mute
 	var state uint32
-
 	if err := s.control.GetState(&state); err != nil {
 		s.logger.Warnw("Failed to get session state while setting mute", "error", err)
 		return fmt.Errorf("get session state: %w", err)
@@ -173,15 +193,18 @@ func (s *wcaSession) SetMute(m bool) error {
 	}
 
 	s.logger.Debugw("Adjusting session mute", "to", m)
-
 	return nil
 }
 
 func (s *wcaSession) Release() {
-	s.logger.Debug("Releasing audio session")
-
-	s.volume.Release()
-	s.control.Release()
+	if s.volume != nil {
+		s.volume.Release()
+		s.volume = nil
+	}
+	if s.control != nil {
+		s.control.Release()
+		s.control = nil
+	}
 }
 
 func (s *wcaSession) String() string {
@@ -189,8 +212,11 @@ func (s *wcaSession) String() string {
 }
 
 func (s *masterSession) GetVolume() float32 {
-	var level float32
+	if s.volume == nil {
+		return 0
+	}
 
+	var level float32
 	if err := s.volume.GetMasterVolumeLevelScalar(&level); err != nil {
 		s.logger.Warnw("Failed to get session volume", "error", err)
 	}
@@ -204,6 +230,10 @@ func (s *masterSession) SetVolume(v float32) error {
 		return errRefreshSessions
 	}
 
+	if s.volume == nil {
+		return errors.New("master session volume is nil")
+	}
+
 	if err := s.volume.SetMasterVolumeLevelScalar(v, s.eventCtx); err != nil {
 		s.logger.Warnw("Failed to set session volume",
 			"error", err,
@@ -213,13 +243,15 @@ func (s *masterSession) SetVolume(v float32) error {
 	}
 
 	s.logger.Debugw("Adjusting session volume", "to", fmt.Sprintf("%.2f", v))
-
 	return nil
 }
 
 func (s *masterSession) GetMute() bool {
-	var muted bool
+	if s.volume == nil {
+		return false
+	}
 
+	var muted bool
 	if err := s.volume.GetMute(&muted); err != nil {
 		s.logger.Warnw("Failed to get session mute", "error", err)
 		return false
@@ -234,6 +266,10 @@ func (s *masterSession) SetMute(m bool) error {
 		return errRefreshSessions
 	}
 
+	if s.volume == nil {
+		return errors.New("master session volume is nil")
+	}
+
 	if err := s.volume.SetMute(m, s.eventCtx); err != nil {
 		s.logger.Warnw("Failed to set session mute",
 			"error", err,
@@ -243,14 +279,14 @@ func (s *masterSession) SetMute(m bool) error {
 	}
 
 	s.logger.Debugw("Adjusting session mute", "to", m)
-
 	return nil
 }
 
 func (s *masterSession) Release() {
-	s.logger.Debug("Releasing audio session")
-
-	s.volume.Release()
+	if s.volume != nil {
+		s.volume.Release()
+		s.volume = nil
+	}
 }
 
 func (s *masterSession) String() string {
@@ -275,6 +311,11 @@ func ReadMasterVolume() (float32, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get all sessions: %w", err)
 	}
+	defer func() {
+		for _, s := range sessions {
+			s.Release()
+		}
+	}()
 
 	for _, s := range sessions {
 		if s.Key() == masterSessionName {
@@ -300,6 +341,11 @@ func ReadAppVolumeByName(name string) (float32, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get all sessions: %w", err)
 	}
+	defer func() {
+		for _, s := range sessions {
+			s.Release()
+		}
+	}()
 
 	target := strings.ToLower(name)
 	alt := target
@@ -332,6 +378,11 @@ func ReadAppVolumeByPID(pid int) (float32, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get all sessions: %w", err)
 	}
+	defer func() {
+		for _, s := range sessions {
+			s.Release()
+		}
+	}()
 
 	for _, s := range sessions {
 		if ws, ok := s.(*wcaSession); ok {

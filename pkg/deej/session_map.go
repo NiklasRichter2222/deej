@@ -20,7 +20,7 @@ type sessionMap struct {
 	logger *zap.SugaredLogger
 
 	m    map[string][]Session
-	lock sync.Locker
+	lock sync.RWMutex
 
 	sessionFinder SessionFinder
 
@@ -75,7 +75,6 @@ func newSessionMap(deej *Deej, logger *zap.SugaredLogger, sessionFinder SessionF
 		deej:           deej,
 		logger:         logger,
 		m:              make(map[string][]Session),
-		lock:           &sync.Mutex{},
 		sessionFinder:  sessionFinder,
 		sliderSyncStop: make(chan struct{}),
 	}
@@ -99,39 +98,55 @@ func (m *sessionMap) initialize() error {
 }
 
 func (m *sessionMap) release() error {
+	m.sliderSyncStopOnce.Do(func() {
+		close(m.sliderSyncStop)
+	})
+
+	m.clear()
+
 	if err := m.sessionFinder.Release(); err != nil {
 		m.logger.Warnw("Failed to release session finder during session map release", "error", err)
 		return fmt.Errorf("release session finder during release: %w", err)
 	}
 
-	m.sliderSyncStopOnce.Do(func() {
-		close(m.sliderSyncStop)
-	})
-
 	return nil
 }
 
-// assumes the session map is clean!
-// only call on a new session map or as part of refreshSessions which calls reset
+// getAndAddSessions acquires all current sessions from SessionFinder, atomically swaps the map, and safely releases old sessions.
 func (m *sessionMap) getAndAddSessions() error {
-
-	// mark that we're refreshing before anything else
-	m.lastSessionRefresh = time.Now()
-	m.unmappedSessions = nil
-
 	sessions, err := m.sessionFinder.GetAllSessions()
 	if err != nil {
 		m.logger.Warnw("Failed to get sessions from session finder", "error", err)
 		return fmt.Errorf("get sessions from SessionFinder: %w", err)
 	}
 
+	newMap := make(map[string][]Session)
+	var newUnmapped []Session
+
 	for _, session := range sessions {
-		m.add(session)
+		key := session.Key()
+		newMap[key] = append(newMap[key], session)
 
 		if !m.sessionMapped(session) {
 			m.logger.Debugw("Tracking unmapped session", "session", session)
-			m.unmappedSessions = append(m.unmappedSessions, session)
+			newUnmapped = append(newUnmapped, session)
 		}
+	}
+
+	// Atomically swap the session map under exclusive lock and capture old sessions for release
+	m.lock.Lock()
+	var oldSessions []Session
+	for _, oldList := range m.m {
+		oldSessions = append(oldSessions, oldList...)
+	}
+	m.m = newMap
+	m.unmappedSessions = newUnmapped
+	m.lastSessionRefresh = time.Now()
+	m.lock.Unlock()
+
+	// Safely release the old sessions now that no ongoing readers can access them
+	for _, oldSession := range oldSessions {
+		oldSession.Release()
 	}
 
 	m.logger.Infow("Got all audio sessions successfully", "sessionMap", m)
@@ -148,7 +163,7 @@ func (m *sessionMap) setupOnConfigReload() {
 
 	go func() {
 		runtime.LockOSThread()
-		ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
+		_ = ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 		for {
 			select {
 			case <-configReloadedChannel:
@@ -164,7 +179,7 @@ func (m *sessionMap) setupOnSliderMove() {
 
 	go func() {
 		runtime.LockOSThread()
-		ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
+		_ = ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 		for {
 			select {
 			case event := <-sliderEventsChannel:
@@ -176,14 +191,10 @@ func (m *sessionMap) setupOnSliderMove() {
 
 // performance: explain why force == true at every such use to avoid unintended forced refresh spams
 func (m *sessionMap) refreshSessions(force bool) {
-
 	// make sure enough time passed since the last refresh, unless force is true in which case always clear
 	if !force && m.lastSessionRefresh.Add(minTimeBetweenSessionRefreshes).After(time.Now()) {
 		return
 	}
-
-	// clear and release sessions first
-	m.clear()
 
 	if err := m.getAndAddSessions(); err != nil {
 		m.logger.Warnw("Failed to re-acquire all audio sessions", "error", err)
@@ -251,31 +262,24 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 	adjustmentFailed := false
 	containsCurrentTarget := false
 
-	// for each possible target for this slider...
+	// acquire read lock while adjusting volumes of matching sessions
+	m.lock.RLock()
 	for _, target := range targets {
 		trimmedTarget := strings.ToLower(strings.TrimSpace(target))
 		if trimmedTarget == specialTargetTransformPrefix+specialTargetCurrentWindow {
 			containsCurrentTarget = true
 		}
 
-		// resolve the target name by cleaning it up and applying any special transformations.
-		// depending on the transformation applied, this can result in more than one target name
 		resolvedTargets := m.resolveTarget(target)
 
-		// for each resolved target...
 		for _, resolvedTarget := range resolvedTargets {
-
-			// check the map for matching sessions
-			sessions, ok := m.get(resolvedTarget)
-
-			// no sessions matching this target - move on
-			if !ok {
+			sessions, ok := m.m[resolvedTarget]
+			if !ok || len(sessions) == 0 {
 				continue
 			}
 
 			targetFound = true
 
-			// iterate all matching sessions and adjust the volume of each one
 			for _, session := range sessions {
 				if session.GetVolume() != event.PercentValue {
 					if err := session.SetVolume(event.PercentValue); err != nil {
@@ -286,10 +290,10 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 			}
 		}
 	}
+	m.lock.RUnlock()
 
-	// if we still haven't found a target or the volume adjustment failed, maybe look for the target again.
+	// if we still haven't found a target or the volume adjustment failed, look for the target again.
 	// processes could've opened since the last time this slider moved.
-	// if they haven't, the cooldown will take care to not spam it up
 	if !targetFound {
 		elapsed := time.Since(m.lastSessionRefresh)
 		if containsCurrentTarget && elapsed > currentTargetForceRefreshCooldown {
@@ -300,10 +304,6 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 			m.refreshSessions(false)
 		}
 	} else if adjustmentFailed {
-
-		// performance: the reason that forcing a refresh here is okay is that we'll only get here
-		// when a session's SetVolume call errored, such as in the case of a stale master session
-		// (or another, more catastrophic failure happens)
 		m.refreshSessions(true)
 	}
 }
@@ -319,13 +319,16 @@ func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
 	fallbackVolumes := make([]float32, 0)
 	preferCurrent := false
 
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
 	for _, target := range targets {
 		trimmedTarget := strings.ToLower(strings.TrimSpace(target))
 		resolvedTargets := m.resolveTarget(target)
 
 		for _, resolvedTarget := range resolvedTargets {
-			sessions, ok := m.get(resolvedTarget)
-			if !ok {
+			sessions, ok := m.m[resolvedTarget]
+			if !ok || len(sessions) == 0 {
 				continue
 			}
 
@@ -342,7 +345,7 @@ func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
 	}
 
 	volumes := fallbackVolumes
-	if preferCurrent {
+	if preferCurrent && len(preferredVolumes) > 0 {
 		volumes = preferredVolumes
 	}
 
@@ -369,13 +372,16 @@ func (m *sessionMap) sliderMute(sliderIdx int) (bool, bool) {
 	fallbackMutes := make([]bool, 0)
 	preferCurrent := false
 
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
 	for _, target := range targets {
 		trimmedTarget := strings.ToLower(strings.TrimSpace(target))
 		resolvedTargets := m.resolveTarget(target)
 
 		for _, resolvedTarget := range resolvedTargets {
-			sessions, ok := m.get(resolvedTarget)
-			if !ok {
+			sessions, ok := m.m[resolvedTarget]
+			if !ok || len(sessions) == 0 {
 				continue
 			}
 
@@ -428,12 +434,13 @@ func (m *sessionMap) ToggleSliderMute(sliderIdx int) error {
 	adjustmentFailed := false
 	targetFound := false
 
+	m.lock.RLock()
 	for _, target := range targets {
 		resolvedTargets := m.resolveTarget(target)
 
 		for _, resolvedTarget := range resolvedTargets {
-			sessions, ok := m.get(resolvedTarget)
-			if !ok {
+			sessions, ok := m.m[resolvedTarget]
+			if !ok || len(sessions) == 0 {
 				continue
 			}
 
@@ -446,6 +453,7 @@ func (m *sessionMap) ToggleSliderMute(sliderIdx int) error {
 			}
 		}
 	}
+	m.lock.RUnlock()
 
 	if !targetFound || adjustmentFailed {
 		m.refreshSessions(true)
@@ -457,14 +465,14 @@ func (m *sessionMap) ToggleSliderMute(sliderIdx int) error {
 
 	return nil
 }
-// SetActivePage removed.
+
 func (m *sessionMap) setupSliderVolumeSync() {
 	const syncInterval = 500 * time.Millisecond
 	syncTicks := 0
 
 	go func() {
 		runtime.LockOSThread()
-		ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
+		_ = ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 		ticker := time.NewTicker(syncInterval)
 		defer ticker.Stop()
 
@@ -475,8 +483,8 @@ func (m *sessionMap) setupSliderVolumeSync() {
 					continue
 				}
 				syncTicks++
-				// Every 2 seconds (4 ticks), check if any mapped targets are missing and refresh sessions
-				if syncTicks%4 == 0 && m.hasMissingMappedTargets() {
+				// Periodically (every 30s = 60 ticks), check if any mapped targets were missing and discover new sessions
+				if syncTicks%60 == 0 && m.hasMissingMappedTargets() {
 					m.refreshSessions(false)
 				}
 				m.syncAllSliderVolumes()
@@ -488,11 +496,14 @@ func (m *sessionMap) setupSliderVolumeSync() {
 }
 
 func (m *sessionMap) hasMissingMappedTargets() bool {
-	m.lock.Lock()
-	defer m.lock.Unlock()
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 
 	missing := false
 	m.deej.config.SliderMapping.iterate(func(sliderIdx int, targets []string) {
+		if missing {
+			return
+		}
 		for _, target := range targets {
 			if m.targetHasSpecialTransform(target) {
 				continue
@@ -584,10 +595,12 @@ func (m *sessionMap) applyTargetTransform(specialTargetName string) []string {
 
 	// get currently unmapped sessions
 	case specialTargetAllUnmapped:
+		m.lock.RLock()
 		targetKeys := make([]string, len(m.unmappedSessions))
 		for sessionIdx, session := range m.unmappedSessions {
 			targetKeys[sessionIdx] = session.Key()
 		}
+		m.lock.RUnlock()
 
 		return targetKeys
 	}
@@ -610,8 +623,8 @@ func (m *sessionMap) add(value Session) {
 }
 
 func (m *sessionMap) get(key string) ([]Session, bool) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 
 	value, ok := m.m[key]
 	return value, ok
@@ -619,24 +632,24 @@ func (m *sessionMap) get(key string) ([]Session, bool) {
 
 func (m *sessionMap) clear() {
 	m.lock.Lock()
-	defer m.lock.Unlock()
+	var oldSessions []Session
+	for _, sessions := range m.m {
+		oldSessions = append(oldSessions, sessions...)
+	}
+	m.m = make(map[string][]Session)
+	m.unmappedSessions = nil
+	m.lock.Unlock()
 
 	m.logger.Debug("Releasing and clearing all audio sessions")
-
-	for key, sessions := range m.m {
-		for _, session := range sessions {
-			session.Release()
-		}
-
-		delete(m.m, key)
+	for _, session := range oldSessions {
+		session.Release()
 	}
-
 	m.logger.Debug("Session map cleared")
 }
 
 func (m *sessionMap) String() string {
-	m.lock.Lock()
-	defer m.lock.Unlock()
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 
 	sessionCount := 0
 
@@ -648,8 +661,8 @@ func (m *sessionMap) String() string {
 }
 
 func (m *sessionMap) listSessionKeys() []string {
-	m.lock.Lock()
-	defer m.lock.Unlock()
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 
 	keys := make([]string, 0, len(m.m))
 	for key := range m.m {

@@ -37,6 +37,8 @@ type SerialIO struct {
 
 	sliderMoveConsumers []chan SliderMoveEvent
 
+	writeMu sync.Mutex
+
 	lastSentSliderPositions   map[int]float32
 	lastSentSliderPositionsMu sync.Mutex
 
@@ -238,13 +240,18 @@ func (sio *SerialIO) setupOnConfigReload() {
 }
 
 func (sio *SerialIO) close(logger *zap.SugaredLogger) {
-	if err := sio.conn.Close(); err != nil {
-		logger.Warnw("Failed to close serial connection", "error", err)
-	} else {
-		logger.Debug("Serial connection closed")
+	sio.writeMu.Lock()
+	defer sio.writeMu.Unlock()
+
+	if sio.conn != nil {
+		if err := sio.conn.Close(); err != nil {
+			logger.Warnw("Failed to close serial connection", "error", err)
+		} else {
+			logger.Debug("Serial connection closed")
+		}
+		sio.conn = nil
 	}
 
-	sio.conn = nil
 	sio.connected = false
 	sio.resetSliderDisplayCache()
 }
@@ -621,12 +628,19 @@ func (sio *SerialIO) resetSliderDisplayCache() {
 }
 
 func (sio *SerialIO) writeSerialLine(payload string) error {
+	sio.writeMu.Lock()
+	defer sio.writeMu.Unlock()
+
+	if sio.conn == nil || !sio.connected {
+		return errors.New("serial: connection not active")
+	}
+
 	if !strings.HasSuffix(payload, "\r\n") {
 		payload += "\r\n"
 	}
-	
-	if sio.deej.Verbose() || true {
-		sio.logger.Infow("writing to serial", "payload", payload)
+
+	if sio.deej.Verbose() {
+		sio.logger.Debugw("writing to serial", "payload", payload)
 	}
 
 	_, err := sio.conn.Write([]byte(payload))
