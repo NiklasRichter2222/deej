@@ -516,16 +516,12 @@ func (sio *SerialIO) sendInitialSliderVolumes(logger *zap.SugaredLogger) error {
 
 	for _, idx := range indices {
 		volume, ok := sio.deej.sessions.sliderVolume(idx)
-		if !ok {
-			if sio.deej.Verbose() {
-				logger.Debugw("No active sessions for slider, sending zero", "slider", idx)
+		if ok {
+			if err := sio.SendSliderDisplayValue(idx, volume); err != nil {
+				return fmt.Errorf("send initial volume for slider %d: %w", idx, err)
 			}
-			volume = 0
+			time.Sleep(5 * time.Millisecond)
 		}
-		if err := sio.SendSliderDisplayValue(idx, volume); err != nil {
-			return fmt.Errorf("send initial volume for slider %d: %w", idx, err)
-		}
-		time.Sleep(5 * time.Millisecond)
 
 		muted, ok := sio.deej.sessions.sliderMute(idx)
 		if ok {

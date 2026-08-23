@@ -539,10 +539,6 @@ func (m *sessionMap) syncAllSliderVolumes() {
 			if err := m.deej.serial.SendSliderDisplayValue(idx, volume); err != nil {
 				m.logger.Warnw("Failed to sync slider display", "slider", idx, "error", err)
 			}
-		} else {
-			if err := m.deej.serial.SendSliderDisplayValue(idx, 0); err != nil {
-				m.logger.Warnw("Failed to sync slider display", "slider", idx, "error", err)
-			}
 		}
 
 		muted, ok := m.sliderMute(idx)

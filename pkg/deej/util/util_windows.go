@@ -2,6 +2,7 @@ package util
 
 import (
 	"fmt"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -15,6 +16,7 @@ const (
 )
 
 var (
+	getCurrentWindowMutex      sync.Mutex
 	lastGetCurrentWindowResult []string
 	lastGetCurrentWindowCall   = time.Now()
 )
@@ -46,6 +48,8 @@ var (
 )
 
 func getCurrentWindowProcessNames() ([]string, error) {
+	getCurrentWindowMutex.Lock()
+	defer getCurrentWindowMutex.Unlock()
 
 	// apply an internal cooldown on this function to avoid calling windows API functions too frequently.
 	// return a cached value during that cooldown
