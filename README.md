@@ -1,261 +1,387 @@
 # deej
 
-deej is an **open-source hardware volume mixer** for Windows and Linux PCs. It lets you use real-life sliders (like a DJ!) to **seamlessly control the volumes of different apps** (such as your music player, the game you're playing and your voice chat session) without having to stop what you're doing.
+deej is an **open-source hardware volume mixer** for Windows and Linux PCs. It lets you use physical rotary controls to **seamlessly control the volumes of different applications** (such as your music player, the game you're playing, and your voice chat session) without having to Alt-Tab or interrupt what you're doing.
 
-**Join the [deej Discord server](https://discord.gg/nf88NJu) if you need help or have any questions!**
+This enhanced version repurposes the premium hardware of an **AVerMedia Live Streamer AX310** (e.g. units with dead mainboards) by replacing the internal electronics with a **custom ESP32-S3 mainboard**. The custom PCB features dedicated voltage regulation and an **integrated USB hub**—allowing an internal **Stream Deck module** to be daisy-chained and mounted directly where the original AX310 screen was. The controller provides **6 rotary encoders with push-to-mute**, a **dual-page system (12 virtual channels)**, **96 dynamic RGB LEDs** with per-channel color gradients and ambient backlighting, **dedicated hardware brightness controls**, **bidirectional PC sync**, and **resilient auto-reconnect logic**.
+
+**Join the official [deej Discord server](https://discord.gg/nf88NJu) for community discussion, questions, and support!**
 
 [![Discord](https://img.shields.io/discord/702940502038937667?logo=discord)](https://discord.gg/nf88NJu)
 
-> **_New:_** [work-in-progress deej FAQ](./docs/faq/faq.md)!
+---
 
-deej consists of a [lightweight desktop client](#features) written in Go, and an Arduino-based hardware setup that's simple and cheap to build. [**Check out some versions built by members of our community!**](./community.md)
+## Showcase
 
-**[Download the latest release](https://github.com/omriharel/deej/releases/latest) | [Video demonstration](https://youtu.be/VoByJ4USMr8) | [Build video by Tech Always](https://youtu.be/x2yXbFiiAeI)**
+<!-- ================================================================= -->
+<!-- PLACEHOLDER: Insert your final design photo(s) below             -->
+<!-- Replace 'assets/final-build.jpg' with the path to your photo(s) -->
+<!-- ================================================================= -->
+![Deej Final Build](assets/final-build.jpg)
+*Custom ESP32-S3 Deej Controller (AX310 Conversion) with 6 Rotary Encoders, 96-LED Lighting Matrix, and Internal Stream Deck Integration*
 
-![deej](assets/build-3d-annotated.png)
-
-> _**Psst!** [No 3D printer? No problem!](./assets/build-shoebox.jpg)_ You can build deej on some cardboard, a shoebox or even a breadboard :)
+---
 
 ## Table of contents
 
-- [Features](#features)
-- [How it works](#how-it-works)
-  - [Hardware](#hardware)
-    - [Schematic](#schematic)
-  - [Software](#software)
-- [Slider mapping (configuration)](#slider-mapping-configuration)
-- [Build your own!](#build-your-own)
-  - [FAQ](#faq)
-  - [Build video](#build-video)
-  - [Bill of Materials](#bill-of-materials)
-  - [Thingiverse collection](#thingiverse-collection)
-  - [Build procedure](#build-procedure)
-- [How to run](#how-to-run)
-  - [Requirements](#requirements)
-  - [Download and installation](#download-and-installation)
-  - [Building from source](#building-from-source)
-- [Community](#community)
-- [License](#license)
+- [User Guide](#user-guide)
+  - [Features Overview](#features-overview)
+  - [Controller Layout & Usage](#controller-layout--usage)
+  - [How to Run (Quick Start)](#how-to-run-quick-start)
+  - [Browser-based Configuration UI](#browser-based-configuration-ui)
+  - [Slider Mapping & Configuration (`config.yaml`)](#slider-mapping--configuration-configyaml)
+- [Developer & Builder Guide](#developer--builder-guide)
+  - [Bill of Materials (BOM) & Donor Hardware](#bill-of-materials-bom--donor-hardware)
+  - [Custom PCB & Hardware Architecture](#custom-pcb--hardware-architecture)
+  - [Firmware Guide (PlatformIO)](#firmware-guide-platformio)
+  - [Building Desktop Client from Source](#building-desktop-client-from-source)
+  - [Serial Communication Protocol](#serial-communication-protocol)
+- [Community & License](#community--license)
 
-## Features
+---
 
-deej is written in Go and [distributed](https://github.com/omriharel/deej/releases/latest) as a portable (no installer needed) executable.
+# User Guide
 
-- Bind apps to different sliders
-  - Bind multiple apps per slider (i.e. one slider for all your games)
-  - Bind the master channel
-  - Bind "system sounds" (on Windows)
-  - Bind specific audio devices by name (on Windows)
-  - Bind currently active app (on Windows)
-  - Bind all other unassigned apps
-- Control your microphone's input level
-- Optional bidirectional sync (send current PC volumes to your controller)
-- Controller lighting support (background lighting + per-slider colors)
-- Lightweight desktop client, consuming around 10MB of memory
-- Runs from your system tray
-  - Includes a tray action to open a browser-based configuration UI
-- Helpful notifications to let you know if something isn't working
+## Features Overview
 
-> **Looking for the older Python version?** It's no longer maintained, but you can always find it in the [`legacy-python` branch](https://github.com/omriharel/deej/tree/legacy-python).
+- **6 Rotary Encoders with Tactile Detents**: Smooth volume control with precise tactile feedback.
+- **Push-to-Mute on Every Knob**: Click any encoder to instantly mute or unmute its mapped application. The volume arc turns red when muted.
+- **Dual-Page Switching (12 Channels Total)**: Dedicated hardware buttons switch between **Page 1 (Left)** and **Page 2 (Right)**, doubling the physical knobs into 12 distinct controllable channels.
+- **Hardware Brightness Controls**: Adjust global LED brightness directly from the controller with tap, smooth continuous hold-to-ramp, and max-brightness blink indication.
+- **96-LED Matrix Lighting**:
+  - **Encoder Volume Arcs**: 10-LED ring per knob showing exact volume levels with smooth partial-LED interpolation.
+  - **Color Gradients**: Configure custom start (0%) and full (100%) RGB colors per channel and per page.
+  - **Ambient Mood Backlighting**: Peripheral surround lighting supporting dynamic RGB rainbow cycling or solid hex colors.
+- **Resilient Auto-Reconnection**: Background serial supervisor recovers connection seamlessly on PC sleep/wake cycles or USB reconnections.
+- **Bidirectional Volume Sync**: PC-side volume changes (via Windows mixer, keyboard shortcuts, or on-screen sliders) immediately mirror back to the controller's LED rings.
+- **Built-in Configuration UI**: Accessible directly from the system tray menu to visually map sliders, choose colors, and manage profiles.
+- **Lightweight**: Desktop client written in Go uses ~10 MB of RAM and runs quietly in the system tray.
 
-## How it works
+---
 
-### Hardware
+## Controller Layout & Usage
 
-- The sliders are connected to 5 (or as many as you like) analog pins on an Arduino Nano/Uno board. They're powered from the board's 5V output (see schematic)
-- The board connects via a USB cable to the PC
+```
++-----------------------------------------------------------------------+
+|                            DEEJ CONTROLLER                            |
+|                                                                       |
+|             [ Rol ] Brightness +       [ Ror ] Brightness -           |
+|             [ Rul ] Page Left (Page 0) [ Rur ] Page Right (Page 1)    |
+|                                                                       |
+|     ( E1 )       ( E2 )       ( E3 )       ( E4 )       ( E5 )       ( E6 )   |
+|      Knob         Knob         Knob         Knob         Knob         Knob    |
++-----------------------------------------------------------------------+
+```
 
-#### Schematic
+### Controls Summary
 
-![Hardware schematic](assets/schematic.png)
+| Control | Action | Function |
+| :--- | :--- | :--- |
+| **Knobs (`E1` – `E6`)** | **Rotate** | Increases or decreases volume for the mapped application on the active page. |
+| **Knobs (`E1` – `E6`)** | **Press (Click)** | Toggles mute for that channel. The volume arc turns solid red while muted. |
+| **`Rol` (Top Left)** | **Single Tap** | Increases LED brightness by 3%. Blinks quickly upon reaching 100% max brightness. |
+| **`Rol` (Top Left)** | **Press & Hold** | Continuously ramps brightness up to 100%. |
+| **`Ror` (Top Right)** | **Single Tap** | Decreases LED brightness by 3%. Tapping at 1% turns LEDs completely off. |
+| **`Ror` (Top Right)** | **Press & Hold** | Continuously ramps brightness down to 1% (ambient backlighting turns off). |
+| **`Rul` (Bottom Left)** | **Single Tap** | Switches active layer to **Page 1 (Left)**. |
+| **`Rur` (Bottom Right)** | **Single Tap** | Switches active layer to **Page 2 (Right)**. |
 
-### Software
+---
 
-- The code running on the Arduino board is a [C program](./arduino/deej-5-sliders-vanilla/deej-5-sliders-vanilla.ino) constantly writing current slider values over its serial interface
-- The PC runs a lightweight [Go client](./pkg/deej/cmd/main.go) in the background. This client reads the serial stream and adjusts app volumes according to the given configuration file
+## How to Run (Quick Start)
 
-## Slider mapping (configuration)
+### Requirements
+- **Windows**: Windows 10 or Windows 11 (64-bit).
+- **Linux**: Supported with GTK/AppIndicator dependencies (`libgtk-3-dev`, `libappindicator3-dev`, `libwebkit2gtk-4.0-dev`).
 
-deej uses a simple YAML-formatted configuration file named [`config.yaml`](./config.yaml), placed alongside the deej executable.
+### Running the Pre-built Client
 
-The config file determines which applications (and devices) are mapped to which sliders, and which parameters to use for the connection to the Arduino board, as well as other user preferences.
+1. Download or copy `deej.exe` (or `deej-release.exe`) and [`config.yaml`](./config.yaml) into the same folder.
+2. Plug in your Deej controller via USB.
+3. Open `config.yaml` to confirm your `com_port` (e.g. `COM8`), or configure it through the tray UI.
+4. Run `deej.exe`. A Deej icon will appear in your system tray.
+5. *(Optional)* To run on Windows startup, create a shortcut to `deej.exe` and place it in:
+   ```
+   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+   ```
 
-**This file auto-reloads when its contents are changed, so you can change application mappings on-the-fly without restarting deej.**
+---
 
-It looks like this:
+## Browser-based Configuration UI
+
+deej includes a built-in web configuration dashboard accessible from your system tray:
+
+1. Right-click the **deej** tray icon in your system taskbar.
+2. Click **Open configuration UI**.
+3. In the web interface you can:
+   - Select currently running applications from a live dropdown list.
+   - Assign apps and devices across both **Page 1 (Left)** and **Page 2 (Right)**.
+   - Configure custom zero% and full% gradient colors per channel with visual color pickers.
+   - Adjust ambient lighting mode (Rainbow / Off / Solid color) and default brightness.
+   - Save and load configuration profiles stored in `profiles/*.yaml`.
+4. Click **Save to config.yaml** to apply changes instantly.
+
+---
+
+## Slider Mapping & Configuration (`config.yaml`)
+
+deej uses a simple YAML configuration file named [`config.yaml`](./config.yaml).
+
+> [!TIP]
+> **Live Reloading**: Any edits saved to `config.yaml` take effect immediately without restarting deej.
+
+### Example `config.yaml`
 
 ```yaml
 # --- Slider Mapping ---
+# Process names are case-insensitive.
+# Supported special targets: master, mic, system, deej.current, deej.unmapped, or exact audio device names.
 slider_count: 6
 slider_mapping:
-  0: master
-  1:
-    - deej.current
-    - helldivers2.exe
-  2: ts3client_win64.exe
-  3:
-    - discord.exe
-    - spotify.exe
-  4: deej.unmapped
-  5: mic
+  left:
+    0: master
+    1: deej.current
+    2: ts3client_win64.exe
+    3: discord.exe
+    4:
+      - spotify.exe
+      - youtube-music-desktop-app.exe
+    5: mic
+  right:
+    0: master
+    1: deej.current
+    2: ts3client_win64.exe
+    3: discord.exe
+    4:
+      - spotify.exe
+      - youtube-music-desktop-app.exe
+    5: mic
 
-# set this to true if you want the controls inverted (i.e. top is 0%, bottom is 100%)
+# --- General Options ---
+default_brightness: 0.15
 invert_sliders: false
+noise_reduction: default
 
-# settings for connecting to the controller board
+# --- Connection Settings ---
 com_port: COM8
 baud_rate: 9600
 
-# adjust the amount of signal noise reduction depending on your hardware quality
-# supported values are "low" (excellent hardware), "default" (regular hardware) or "high" (bad, noisy hardware)
-noise_reduction: default
-
-# send current lighting + slider volumes to the controller when deej starts
+# --- Bidirectional Sync Settings ---
 send_on_startup: true
-
-# continuously send PC-side volume changes back to the controller
 sync_volumes: true
 
-# optional controller ambient lighting ("rgb", "off" or a hex color)
-background_lighting: "rgb"
-
-# optional slider LED colors from 0% (zero) to 100% (full)
+# --- Controller Lighting ---
+background_lighting: rgb
 color_mapping:
-  0:
-    zero: "#ff0000"
-    full: "#00ff00"
-  1:
-    zero: "#ff0000"
-    full: "#00ffff"
+  left:
+    color: '#ffffff'
+    offcolor: '#ff0000'
+    0:
+      zero: '#00ffff'
+      full: '#ff0000'
+    1:
+      zero: '#ff7b00'
+      full: '#ff7b00'
+    2:
+      zero: '#00ffee'
+      full: '#001eff'
+    3:
+      zero: '#5662f6'
+      full: '#5662f6'
+    4:
+      zero: '#ff0033'
+      full: '#ff0033'
+    5:
+      zero: '#ff0000'
+      full: '#00ff00'
+  right:
+    color: '#ffffff'
+    offcolor: '#00ff00'
+    0:
+      zero: '#00ffff'
+      full: '#ff0000'
+    1:
+      zero: '#ff7b00'
+      full: '#ff7b00'
+    2:
+      zero: '#00ffee'
+      full: '#001eff'
+    3:
+      zero: '#5662f6'
+      full: '#5662f6'
+    4:
+      zero: '#ff0033'
+      full: '#ff0033'
+    5:
+      zero: '#ff0000'
+      full: '#00ff00'
 ```
 
-- `master` is a special option to control the master volume of the system _(uses the default playback device)_
-- `mic` is a special option to control your microphone's input level _(uses the default recording device)_
-- `deej.unmapped` is a special option to control all apps that aren't bound to any slider ("everything else")
-- On Windows, `deej.current` is a special option to control whichever app is currently in focus
-- On Windows, you can specify a device's full name, i.e. `Speakers (Realtek High Definition Audio)`, to bind that device's level to a slider. This doesn't conflict with the default `master` and `mic` options, and works for both input and output devices.
-  - Be sure to use the full device name, as seen in the menu that comes up when left-clicking the speaker icon in the tray menu
-- `system` is a special option on Windows to control the "System sounds" volume in the Windows mixer
-- All names are case-**in**sensitive, meaning both `chrome.exe` and `CHROME.exe` will work
-- You can create groups of process names (using a list) to either:
-    - control more than one app with a single slider
-    - choose whichever process in the group that's currently running (i.e. to have one slider control any game you're playing)
-- `slider_count` controls how many sliders are shown in the configuration UI
-- `send_on_startup` sends current PC-side slider values (and lighting config) to your controller on startup
-- `sync_volumes` continuously mirrors PC-side volume changes back to the controller
-- `background_lighting` sets the controller background LEDs (`rgb`, `off` or a hex color such as `#0000ff`)
-- `color_mapping` controls each slider's 0%-to-100% LED colors
+### Configuration Options Breakdown
 
-### Configuration UI
+| Setting | Type | Description |
+| :--- | :--- | :--- |
+| `slider_count` | `int` | Number of physical knobs per page (default: `6`). |
+| `slider_mapping.left` | `map` | Mappings for **Page 1 (Left)** channels `0` to `5`. |
+| `slider_mapping.right` | `map` | Mappings for **Page 2 (Right)** channels `0` to `5`. |
+| `default_brightness` | `float` | Startup LED brightness level (`0.0` to `1.0`, e.g. `0.15` for 15%). |
+| `invert_sliders` | `bool` | Set `true` to invert rotation/volume direction. |
+| `noise_reduction` | `string` | Jitter filter strength: `low`, `default`, or `high`. |
+| `com_port` | `string` | Serial port used by the controller (e.g. `COM8` on Windows, `/dev/ttyUSB0` on Linux). |
+| `baud_rate` | `int` | Serial communication baud rate (default: `9600`). |
+| `send_on_startup` | `bool` | Sends initial PC volume levels and lighting config to the controller on launch. |
+| `sync_volumes` | `bool` | Continuously mirrors PC-side volume and mute changes back to the hardware. |
+| `background_lighting` | `string` | Ambient mood backlighting: `rgb` (rainbow mode), `off`, or a `#hex` color (e.g. `#0000ff`). |
+| `color_mapping.left` / `.right` | `map` | Active page button color (`color`), inactive color (`offcolor`), and channel LED start (`zero`) and full (`full`) hex colors. |
 
-deej also includes a lightweight browser-based configuration UI that writes `config.yaml` for you:
+#### Special Mapping Targets
+- `master`: System master playback audio volume.
+- `mic`: Default microphone input recording volume.
+- `deej.current`: Controls whichever window is currently in the active foreground.
+- `deej.unmapped`: Catch-all for any running audio application not bound to another channel.
+- `system`: Windows System Sounds mixer channel.
+- `Audio Device Name`: Exact name of an output or input endpoint, e.g. `Speakers (Realtek Audio)`.
+- `List of Process Names`: Bind multiple executables to a single slider (e.g. a list of games or media players).
 
-1. Right-click the deej tray icon
-2. Click **Open configuration UI**
-3. Edit settings (slider mappings, serial connection, toggles, colors, profiles)
-4. Click **Save to config.yaml**
+---
 
-The UI supports:
-- Selecting running applications from a dropdown (or entering custom targets)
-- Multiple targets per slider
-- COM/TTY selection from detected ports (with manual override)
-- Noise reduction selection (low/default/high)
-- Background lighting presets (rainbow/off/custom color)
-- Per-slider start/end color pickers with a quick "copy start to end" action
-- Basic profile management in `profiles/*.yaml` and loading a profile into `config.yaml`
+# Developer & Builder Guide
 
-## Build your own!
+## Bill of Materials (BOM) & Donor Hardware
 
-Building deej is very simple. You only need a few relatively cheap parts - it's an excellent starter project (and my first Arduino project, personally). Remember that if you need any help or have a question that's not answered here, you can always [join the deej Discord server](https://discord.gg/nf88NJu).
+This build is designed around repurposing a **dead/donor AVerMedia Live Streamer AX310 (NEXUS)** unit and replacing its proprietary mainboard with an open-source ESP32-S3 PCB.
 
-Build deej for yourself, or as an awesome gift for your gaming buddies!
+| Component | Source / Qty | Description |
+| :--- | :---: | :--- |
+| **Donor Hardware (AX310)** | 1x AVerMedia AX310 | Donor unit providing the housing/enclosure, 6 rotary encoders with push switch, 4 rubber dome buttons (`Rol`, `Rul`, `Ror`, `Rur`), and 96-LED front matrix boards |
+| **Custom Replacement Mainboard** | 1x Custom PCB | Drop-in replacement PCB (Gerber files in [`pcb/`](./pcb)) interfacing with AX310 sub-boards |
+| **Microcontroller** | 1x ESP32-S3 | ESP32-S3 module / dev board (running native USB CDC Serial) |
+| **Voltage Regulation** | 1x Circuit | Onboard buck/LDO regulation circuit supplying clean power to ESP32-S3, LED matrix, and internal peripherals |
+| **USB Hub Controller** | 1x IC | Onboard USB 2.0 hub controller chip splitting upstream USB into internal lines |
+| **Stream Deck Module** *(Optional Mod)* | 1x Module | Stream Deck module mounted internally in place of the original AX310 screen, connected via the internal USB hub header |
+| **USB Cable** | 1x USB-C | Single USB Type-C cable for data & power to the PC |
 
-### FAQ
+---
 
-I've started a highly focused effort of writing a proper FAQ page for deej, covering many basic and advanced topics.
+## Custom PCB & Hardware Architecture
 
-It is still _very much a work-in-progress_, but I'm happy to [share it in its current state](./docs/faq/faq.md) in hopes that it at least covers some questions you might have.
+### PCB Design Files & Showcase
 
-FAQ feedback in our [community Discord](https://discord.gg/nf88NJu) is strongly encouraged :)
+All design files, schematics, and manufacturing archives (Gerbers / KiCad project) are located in the [`pcb/`](./pcb) directory.
 
-### Build video
+<!-- ================================================================= -->
+<!-- PLACEHOLDER: Insert your PCB images below                         -->
+<!-- Replace 'pcb/pcb-front.png' and 'pcb/pcb-back.png' with your files -->
+<!-- ================================================================= -->
 
-In case you prefer watching to reading, Charles from the [**Tech Always**](https://www.youtube.com/c/TechAlways) YouTube channel has made [**a fantastic video**](https://youtu.be/x2yXbFiiAeI) that covers the basics of building deej for yourself, including parts, costs, assembly and software. I highly recommend checking it out!
+| PCB Top View | PCB Bottom View |
+| :---: | :---: |
+| ![PCB Front](pcb/pcb-front.png)<br>*(Top Layer / Component Placement)* | ![PCB Back](pcb/pcb-back.png)<br>*(Bottom Layer / Routing)* |
 
-### Bill of Materials
+> [!NOTE]
+> Detailed hardware schematics, BOM exports, and Gerber archives can be found inside the [`pcb/`](./pcb) folder.
 
-- An Arduino Nano, Pro Micro or Uno board
-  - I officially recommend using a Nano or a Pro Micro for their smaller form-factor, friendlier USB connectors and more analog pins. Plus they're cheaper
-  - You can also use any other development board that has a Serial over USB interface
-- A few slider potentiometers, up to your number of free analog pins (the cheaper ones cost around 1-2 USD each, and come with a standard 10K Ohm variable resistor. These _should_ work just fine for this project)
-  - **Important:** make sure to get **linear** sliders, not logarithmic ones! Check the product description
-  - You can also use circular knobs if you like
-- Some wires
-- Any kind of box to hold everything together. **You don't need a 3D printer for this project!** It works fantastically with just a piece of cardboard or a shoebox. That being said, if you do have one, read on...
+### Hardware Architecture
 
-### Thingiverse collection
+- **Drop-in Mainboard Replacement**: Replaces the dead AX310 motherboard while interfacing directly with the original AX310 encoder daughterboard, rubber dome buttons, and LED matrix.
+- **Integrated USB Hub**: An onboard USB 2.0 hub controller allows a single external USB-C connection to route data to both the ESP32-S3 and an internal USB port for daisy-chaining a Stream Deck module (mounted in place of the original AX310 screen).
+- **Onboard Power Regulation**: Dedicated power delivery network ensuring stable voltage for the ESP32-S3, 96 RGB LEDs, and connected USB accessories.
+- **Encoder Inputs**: 6 rotary encoders connected with hardware interrupts for responsive quadrature decoding and debounced push-button sensing.
+- **I2C Bus & Multiplexing**:
+  - `I2C_SDA_PIN`: GPIO 12
+  - `I2C_SCL_PIN`: GPIO 11 (400 kHz bus clock)
+  - `MUX_SELECT_PIN`: GPIO 10 (switches between Bank 0 and Bank 1)
+- **96-LED Mapping Breakdown**:
+  - **LEDs 1 – 60**: 6 encoder volume arcs (10 LEDs per knob, ordered according to encoder board routing).
+  - **LED 61**: `Rol` (Brightness + button indicator).
+  - **LED 62**: `Ror` (Brightness - button indicator).
+  - **LED 63**: `Rur` (Page Right button indicator).
+  - **LED 64**: `Rul` (Page Left button indicator).
+  - **LEDs 65 – 96**: 32 Ambient / Mood surround backlighting LEDs.
+- **Power Management**: Auto-sleep detection turns off all LEDs after 5 seconds of lost serial communication / PC sleep.
 
-With many different 3D-printed designs being added to our [community showcase](./community.md), it felt right to gather all of them in a Thingiverse collection for you to browse. If you have access to a 3D printer, feel free to use one of the designs in your build.
+---
 
-**[Visit our community-created design collection on Thingiverse!](https://thingiverse.com/omriharel/collections/deej)**
+## Firmware Guide (PlatformIO)
 
-> You can also [submit your own](https://discord.gg/nf88NJu) design to be added to the collection. Regardless, if you do upload your design to Thingiverse, _please add a `deej` tag to it so that others can find it more easily_.
+The firmware is written in C++ for the ESP32-S3 using the Arduino framework and managed via [PlatformIO](https://platformio.org/).
 
+- **Source Code**: [`arduino/src/main.cpp`](./arduino/src/main.cpp)
+- **PlatformIO Config**: [`platformio.ini`](./platformio.ini)
+- **Target Environment**: `[env:esp32-s3-devkitc-1]`
 
-### Build procedure
+### Flashing the Firmware
 
-- Connect everything according to the [schematic](#schematic)
-- Test with a multimeter to be sure your sliders are hooked up correctly
-- Flash the Arduino chip with the sketch in [`arduino\deej-5-sliders-vanilla`](./arduino/deej-5-sliders-vanilla/deej-5-sliders-vanilla.ino)
-  - _Important:_ If you have more or less than 5 sliders, you must edit the sketch to match what you have
-- After flashing, check the serial monitor. You should see a constant stream of values separated by a pipe (`|`) character, e.g. `0|240|1023|0|483`
-  - When you move a slider, its corresponding value should move between 0 and 1023
-- Congratulations, you're now ready to run the deej executable!
+1. Install [VS Code](https://code.visualstudio.com/) and the [PlatformIO IDE extension](https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide) (or PlatformIO CLI).
+2. Open this repository in VS Code.
+3. Connect your ESP32-S3 board via USB.
+4. Build and upload:
+   ```bash
+   pio run --target upload
+   ```
+5. Open the serial monitor if needed:
+   ```bash
+   pio device monitor
+   ```
 
-## How to run
+---
 
-### Requirements
+## Building Desktop Client from Source
 
-#### Windows
+The desktop client is written in Go. To compile it from source:
 
-- Windows. That's it
+### Prerequisites
+- [Go](https://golang.org/dl/) (version 1.18 or newer).
+- Windows SDK / Cgo tools (if building for Windows).
 
-#### Linux
+### Build Commands
 
-- Install `libgtk-3-dev`, `libappindicator3-dev` and `libwebkit2gtk-4.0-dev` for system tray support. Pre-built Linux binaries aren't currently released, so you'll need to [build from source](#building-from-source). If there's demand for pre-built binaries, please [let me know](https://discord.gg/nf88NJu)!
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/NiklasRichter2222/deej.git
+   cd deej
+   ```
+2. Build using the provided Windows batch scripts:
+   ```cmd
+   pkg\deej\scripts\windows\build-all.bat
+   ```
+   Or build directly using the Go CLI:
+   ```bash
+   go build -ldflags "-H windowsgui" -o deej.exe ./pkg/deej/cmd
+   ```
 
-### Download and installation
+---
 
-- Head over to the [releases page](https://github.com/omriharel/deej/releases) and download the [latest version](https://github.com/omriharel/deej/releases/latest)'s executable and configuration file (`deej.exe` and `config.yaml`)
-- Place them in the same directory anywhere on your machine
-- (Optional, on Windows) Create a shortcut to `deej.exe` and copy it to `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup` to have deej run on boot
+## Serial Communication Protocol
 
-### Building from source
+The PC client and ESP32-S3 communicate over a 9600-baud serial link using lightweight string payloads.
 
-If you'd rather not download a compiled executable, or want to extend deej or modify it to your needs, feel free to clone the repository and build it yourself. All you need is a Go 1.14 (or above) environment on your machine. If you go this route, make sure to check out the [developer scripts](./pkg/deej/scripts).
+### Controller to PC (Uplink)
 
-Like other Go packages, you can also use the `go get` tool: `go get -u github.com/omriharel/deej`. Please note that the package code now resides in the `pkg/deej` directory, and needs to be imported from there if used inside another project.
+- **Slider Stream**: Sends continuous pipe-separated values for all channels across both pages:
+  ```
+  <P0_E0>|<P0_E1>|<P0_E2>|<P0_E3>|<P0_E4>|<P0_E5>|<P1_E0>|<P1_E1>|<P1_E2>|<P1_E3>|<P1_E4>|<P1_E5>
+  ```
+  *(Values range from `0` to `1023`)*
+- **Mute Toggle**: Sent on encoder push-button click:
+  ```
+  M:<channel_index>
+  ```
 
-If you need any help with this, please [join our Discord server](https://discord.gg/nf88NJu).
+### PC to Controller (Downlink)
 
-## Community
+- **Volume Sync**: `V:<channel_index>:<percent>` (e.g. `V:0:0.75`)
+- **Mute Sync**: `M:<channel_index>:<0|1>` (e.g. `M:0:1` turns LED arc red)
+- **Page Button Colors**: `CP:<page_index>:<active_hex>:<off_hex>` (e.g. `CP:0:#ffffff:#ff0000`)
+- **Channel Colors**: `C:<channel_index>:<zero_hex>:<full_hex>` (e.g. `C:0:#00ffff:#ff0000`)
+- **Global Brightness**: `BR:<value>` (e.g. `BR:0.25`)
+- **Background Mode**: `B:<rgb|#hex>` (e.g. `B:rgb` or `B:#0000ff`)
+- **Heartbeat**: `HB` / `PING`
 
-[![Discord](https://img.shields.io/discord/702940502038937667?logo=discord)](https://discord.gg/nf88NJu)
+---
 
-deej is a relatively new project, but a vibrant and awesome community is rapidly growing around it. Come hang out with us in the [deej Discord server](https://discord.gg/nf88NJu), or check out a whole bunch of cool and creative builds made by our members in the [community showcase](./community.md).
+# Community & License
 
-The server is also a great place to ask questions, suggest features or report bugs (but of course, feel free to use GitHub if you prefer).
-
-### Donations
-
-If you love deej and want to show your support for this project, you can do so using the link below. Please don't feel obligated to donate - building the project and telling your friends about it goes a very long way! Thank you very much.
-
-[![ko-fi](https://www.ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/omriharel)
-
-### Contributing
-
-Please see [`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md).
-
-## License
-
-deej is released under the [MIT license](./LICENSE).
+- **Discord**: Join the [deej Discord server](https://discord.gg/nf88NJu) to share builds and ask questions.
+- **Community Builds**: Browse community creations in [`community.md`](./community.md).
+- **Contributing**: See [`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md).
+- **License**: Released under the [MIT License](./LICENSE).
