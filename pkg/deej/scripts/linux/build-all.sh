@@ -2,5 +2,6 @@
 
 echo 'Building deej (all)...'
 
-./build-dev.sh
-./build-release.sh
+DIR="$(cd "$(dirname "$0")" && pwd)"
+sh "$DIR/build-dev.sh"
+sh "$DIR/build-release.sh"

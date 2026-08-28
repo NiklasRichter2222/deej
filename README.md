@@ -91,7 +91,7 @@ This enhanced version repurposes the premium hardware of an **AVerMedia Live Str
 
 ### Requirements
 - **Windows**: Windows 10 or Windows 11 (64-bit).
-- **Linux**: Supported with GTK/AppIndicator dependencies (`libgtk-3-dev`, `libappindicator3-dev`, `libwebkit2gtk-4.0-dev`).
+- **Linux**: Requires GTK/AppIndicator dependencies (`libgtk-3-dev`, `libappindicator3-dev`, `libwebkit2gtk-4.0-dev`).
 
 ### Running the Pre-built Client
 

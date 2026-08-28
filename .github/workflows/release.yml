@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Build Windows binaries
+        shell: cmd
+        run: |
+          pkg\deej\scripts\windows\build-all.bat
+
+      - name: Prepare Windows dist
+        shell: cmd
+        run: |
+          mkdir dist-windows
+          copy deej-release.exe dist-windows\deej.exe
+          copy deej-release.exe dist-windows\deej-release.exe
+          copy deej-dev.exe dist-windows\deej-dev.exe
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: dist-windows/*
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libappindicator3-dev libwebkit2gtk-4.0-dev
+
+      - name: Build Linux binaries
+        run: |
+          chmod +x pkg/deej/scripts/linux/*.sh
+          sh pkg/deej/scripts/linux/build-dev.sh
+          sh pkg/deej/scripts/linux/build-release.sh
+
+      - name: Prepare Linux dist
+        run: |
+          mkdir dist-linux
+          cp deej-release dist-linux/deej-release-linux
+          cp deej-dev dist-linux/deej-dev-linux
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: dist-linux/*
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Tag Message
+        id: tag_info
+        run: |
+          MSG=$(git tag -l --format='%(contents:subject)' ${{ github.ref_name }})
+          if [ -z "$MSG" ]; then
+            MSG="Initial stable release — mostly feature-complete with multi-OS support"
+          fi
+          echo "body=$MSG" >> $GITHUB_OUTPUT
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: release-assets
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+          path: release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.tag_info.outputs.body }}
+          generate_release_notes: false
+          files: |
+            release-assets/deej.exe
+            release-assets/deej-release.exe
+            release-assets/deej-dev.exe
+            release-assets/deej-release-linux
+            release-assets/deej-dev-linux
+            config.yaml

@@ -5,19 +5,18 @@ package deej
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/jfreymuth/pulse/proto"
-	wca "github.com/moutend/go-wca"
 	"go.uber.org/zap"
 )
 
 type paSessionFinder struct {
-	logger *zap.SugaredLogger
+	logger        *zap.SugaredLogger
+	sessionLogger *zap.SugaredLogger
 
-	wcaManager *wca.IAudioSessionManager2
-	wcaEvents  *wcaEvents
-
-	oleInitialized bool
+	client *proto.Client
+	conn   net.Conn
 }
 
 func (sf *paSessionFinder) GetForegroundProcessName() (string, error) {
