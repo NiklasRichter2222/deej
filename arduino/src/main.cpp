@@ -129,6 +129,11 @@ Color pageFullColor[2][6];
 Color pageButtonColor[2] = {COLOR_WHITE, COLOR_WHITE};
 Color pageButtonOffColor[2] = {COLOR_OFF, COLOR_OFF};
 
+// Connection State
+bool isConnected = false;
+unsigned long disconnectedStartTime = 0;
+const unsigned long DISCONNECT_DEBOUNCE_MS = 5000;
+
 unsigned long lastDeejSendTime = 0;
 
 // --- Function Prototypes ---
@@ -154,8 +159,7 @@ void triggerMaxBlink() {
 // --- Main Setup ---
 void setup() {
   Serial.begin(9600);
-  while (!Serial)
-    ;
+  // Non-blocking setup: do not wait for Serial, allow LED drivers to initialize and stay dark on boot
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(400000);
@@ -207,14 +211,46 @@ void setup() {
     pinMode(buttons[i].pin, INPUT_PULLUP);
   }
 
-  renderLEDs();
+  isConnected = false;
+  disconnectedStartTime = millis();
 }
 
 // --- Main Loop ---
 void loop() {
-  bool needsRender = false;
-
   processDeejSerial();
+
+  bool serialOpen = (bool)Serial;
+
+  if (serialOpen) {
+    disconnectedStartTime = 0;
+    if (!isConnected) {
+      // Reconnected
+      isConnected = true;
+      renderLEDs();
+    }
+  } else {
+    // Serial is not open
+    if (disconnectedStartTime == 0) {
+      disconnectedStartTime = millis();
+    } else if (millis() - disconnectedStartTime >= DISCONNECT_DEBOUNCE_MS) {
+      if (isConnected) {
+        // Confirmed disconnected after 5 seconds: Turn off all LEDs
+        isConnected = false;
+        isMaxBlinking = false;
+        for (int i = 1; i <= TOTAL_LEDS; i++) {
+          ledBuffer[i] = COLOR_OFF;
+          setSingleLedColor(i, COLOR_OFF);
+        }
+      }
+    }
+  }
+
+  if (!isConnected) {
+    delay(10);
+    return;
+  }
+
+  bool needsRender = false;
 
   // Handle Max Brightness Blink Animation
   if (isMaxBlinking) {
@@ -369,6 +405,12 @@ void processDeejSerial() {
   while (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     line.trim();
+    if (line.length() == 0)
+      continue;
+
+    if (line.equalsIgnoreCase("HB") || line.equalsIgnoreCase("PING")) {
+      continue;
+    }
 
     if (line.startsWith("V:")) {
       int c1 = line.indexOf(':');
@@ -625,7 +667,9 @@ void setSingleLedColor(int ledNum, const Color &c) {
     return;
 
   float factor = 0.0f;
-  if (ledNum >= 1 && ledNum <= 60) {
+  if (!isConnected) {
+    factor = 0.0f;
+  } else if (ledNum >= 1 && ledNum <= 60) {
     // Encoders / Faders: scale with globalBrightness
     factor = globalBrightness;
   } else if (ledNum == 61) {
