@@ -35,8 +35,7 @@ jobs:
         run: |
           mkdir dist-windows
           copy deej-release.exe dist-windows\deej.exe
-          copy deej-release.exe dist-windows\deej-release.exe
-          copy deej-dev.exe dist-windows\deej-dev.exe
+          copy deej-dev.exe dist-windows\deej-debug.exe
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -73,8 +72,8 @@ jobs:
       - name: Prepare Linux dist
         run: |
           mkdir dist-linux
-          cp deej-release dist-linux/deej-release-linux
-          cp deej-dev dist-linux/deej-dev-linux
+          cp deej-release dist-linux/deej-linux
+          cp deej-dev dist-linux/deej-debug-linux
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -121,8 +120,7 @@ jobs:
           generate_release_notes: false
           files: |
             release-assets/deej.exe
-            release-assets/deej-release.exe
-            release-assets/deej-dev.exe
-            release-assets/deej-release-linux
-            release-assets/deej-dev-linux
+            release-assets/deej-debug.exe
+            release-assets/deej-linux
+            release-assets/deej-debug-linux
             config.yaml
