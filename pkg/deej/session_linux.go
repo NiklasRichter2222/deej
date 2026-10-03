@@ -126,10 +126,31 @@ func (s *paSession) SetVolume(v float32) error {
 }
 
 func (s *paSession) GetMute() bool {
-	return false
+	request := proto.GetSinkInputInfo{
+		SinkInputIndex: s.sinkInputIndex,
+	}
+	reply := proto.GetSinkInputInfoReply{}
+
+	if err := s.client.Request(&request, &reply); err != nil {
+		s.logger.Warnw("Failed to get session mute", "error", err)
+		return false
+	}
+
+	return reply.Muted
 }
 
 func (s *paSession) SetMute(m bool) error {
+	request := proto.SetSinkInputMute{
+		SinkInputIndex: s.sinkInputIndex,
+		Mute:           m,
+	}
+
+	if err := s.client.Request(&request, nil); err != nil {
+		s.logger.Warnw("Failed to set session mute", "error", err)
+		return fmt.Errorf("adjust session mute: %w", err)
+	}
+
+	s.logger.Debugw("Adjusting session mute", "to", m)
 	return nil
 }
 
@@ -204,10 +225,47 @@ func (s *masterSession) SetVolume(v float32) error {
 }
 
 func (s *masterSession) GetMute() bool {
+	if s.isOutput {
+		request := proto.GetSinkInfo{
+			SinkIndex: s.streamIndex,
+		}
+		reply := proto.GetSinkInfoReply{}
+		if err := s.client.Request(&request, &reply); err == nil {
+			return reply.Mute
+		}
+	} else {
+		request := proto.GetSourceInfo{
+			SourceIndex: s.streamIndex,
+		}
+		reply := proto.GetSourceInfoReply{}
+		if err := s.client.Request(&request, &reply); err == nil {
+			return reply.Mute
+		}
+	}
 	return false
 }
 
 func (s *masterSession) SetMute(m bool) error {
+	var request proto.RequestArgs
+
+	if s.isOutput {
+		request = &proto.SetSinkMute{
+			SinkIndex: s.streamIndex,
+			Mute:      m,
+		}
+	} else {
+		request = &proto.SetSourceMute{
+			SourceIndex: s.streamIndex,
+			Mute:        m,
+		}
+	}
+
+	if err := s.client.Request(request, nil); err != nil {
+		s.logger.Warnw("Failed to set session mute", "error", err)
+		return fmt.Errorf("adjust session mute: %w", err)
+	}
+
+	s.logger.Debugw("Adjusting session mute", "to", m)
 	return nil
 }
 

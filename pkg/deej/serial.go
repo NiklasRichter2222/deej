@@ -47,6 +47,9 @@ type SerialIO struct {
 	lastSentSliderMutes   map[int]bool
 	lastSentSliderMutesMu sync.Mutex
 
+	lastReceivedSliderMoveTime   map[int]time.Time
+	lastReceivedSliderMoveTimeMu sync.Mutex
+
 	// suppress incoming slider move events until this time. used to avoid
 	// echo/feedback loops when we send initial display values to the controller
 	suppressSliderEventsUntil   time.Time
@@ -74,6 +77,7 @@ func NewSerialIO(deej *Deej, logger *zap.SugaredLogger) (*SerialIO, error) {
 		sliderMoveConsumers:     []chan SliderMoveEvent{},
 		lastSentSliderPositions: make(map[int]float32),
 		lastSentSliderMutes:     make(map[int]bool),
+		lastReceivedSliderMoveTime: make(map[int]time.Time),
 	}
 
 	logger.Debug("Created serial i/o instance")
@@ -391,10 +395,13 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 		// convert string values to integers ("1023" -> 1023)
 		number, _ := strconv.Atoi(stringValue)
 
-		// turns out serial lines can occasionally come out dirty; reject any out-of-range value
-		if number < 0 || number > 1023 {
-			sio.logger.Debugw("Got malformed line from serial, ignoring", "line", sanitized)
-			return
+		// Gracefully handle underflows from Arduino rotary encoders (e.g. 42949652)
+		if number > 10000000 {
+			number = 0
+		} else if number > 1023 {
+			number = 1023
+		} else if number < 0 {
+			number = 0
 		}
 
 		// map the value from raw to a "dirty" float between 0 and 1 (e.g. 0.15451...)
@@ -413,6 +420,10 @@ func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {
 
 			// if it does, update the saved value and create a move event
 			sio.currentSliderPercentValues[sliderIdx] = normalizedScalar
+
+			sio.lastReceivedSliderMoveTimeMu.Lock()
+			sio.lastReceivedSliderMoveTime[sliderIdx] = time.Now()
+			sio.lastReceivedSliderMoveTimeMu.Unlock()
 
 			moveEvents = append(moveEvents, SliderMoveEvent{
 				SliderID:     sliderIdx,
@@ -612,6 +623,21 @@ func (sio *SerialIO) SendSliderDisplayValue(sliderIdx int, percent float32) erro
 	}
 
 	position = util.NormalizeScalar(position)
+
+	// Avoid feedback loop: don't echo back if the volume is very close to the last received value
+	if len(sio.currentSliderPercentValues) > sliderIdx {
+		diff := float64(percent - sio.currentSliderPercentValues[sliderIdx])
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff < 0.04 {
+			// Update cache so we don't try to send this later if it's identical
+			sio.lastSentSliderPositionsMu.Lock()
+			sio.lastSentSliderPositions[sliderIdx] = position
+			sio.lastSentSliderPositionsMu.Unlock()
+			return nil
+		}
+	}
 
 	sio.lastSentSliderPositionsMu.Lock()
 	last, ok := sio.lastSentSliderPositions[sliderIdx]

@@ -1,0 +1,20 @@
+--- pkg/deej/serial.go
++++ pkg/deej/serial.go
+@@ -613,6 +613,16 @@
+ 
+ 	position = util.NormalizeScalar(position)
+ 
++	// Avoid feedback loop: don't echo back if Arduino just requested this exact volume
++	if len(sio.currentSliderPercentValues) > sliderIdx {
++		diff := float64(position - sio.currentSliderPercentValues[sliderIdx])
++		if diff < 0 {
++			diff = -diff
++		}
++		if diff < 0.015 {
++			return nil
++		}
++	}
++
+ 	sio.lastSentSliderPositionsMu.Lock()
+ 	last, ok := sio.lastSentSliderPositions[sliderIdx]
+ 	sio.lastSentSliderPositionsMu.Unlock()

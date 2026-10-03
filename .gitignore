@@ -42,6 +42,7 @@ test/
 deej-dev
 deej-release
 releases/
+.deps/
 
 # Python
 __pycache__/

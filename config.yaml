@@ -5,16 +5,16 @@ slider_count: 6
 slider_mapping:
   left:
     0: master
-    1: deej.current
-    2: ts3client_win64.exe
-    3: discord.exe
+    1: brave
+    2: wine64-preloader
+    3: discord
     4:
-      - spotify.exe
-      - youtube-music-desktop-app.exe
+      - spotify
+      - youtube-music-desktop-app
     5: mic
   right:
     0: master
-    1: deej.current
+    1: brave
     2: ts3client_win64.exe
     3: discord.exe
     4:
@@ -28,7 +28,7 @@ invert_sliders: false
 noise_reduction: default
 
 # --- Connection Settings ---
-com_port: COM8
+com_port: /dev/ttyACM0
 baud_rate: 9600
 
 # --- Bidirectional Sync Settings ---
@@ -43,13 +43,13 @@ color_mapping:
     offcolor: '#ff0000'
     0:
       zero: '#00ffff'
-      full: '#ff0000'
+      full: '#bb00ff'
     1:
       zero: '#ff7b00'
       full: '#ff7b00'
     2:
-      zero: '#00ffee'
-      full: '#001eff'
+      zero: '#11ff00'
+      full: '#e1ff00'
     3:
       zero: '#5662f6'
       full: '#5662f6'
