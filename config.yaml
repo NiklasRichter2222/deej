@@ -5,7 +5,7 @@ slider_count: 6
 slider_mapping:
   left:
     0: master
-    1: brave
+    1: deej.current
     2: wine64-preloader
     3: discord
     4:

@@ -173,7 +173,7 @@ func (s *masterSession) GetVolume() float32 {
 
 		if err := s.client.Request(&request, &reply); err != nil {
 			s.logger.Warnw("Failed to get session volume", "error", err)
-			return 0
+			return -1.0
 		}
 
 		level = parseChannelVolumes(reply.ChannelVolumes)
@@ -185,7 +185,7 @@ func (s *masterSession) GetVolume() float32 {
 
 		if err := s.client.Request(&request, &reply); err != nil {
 			s.logger.Warnw("Failed to get session volume", "error", err)
-			return 0
+			return -1.0
 		}
 
 		level = parseChannelVolumes(reply.ChannelVolumes)
@@ -288,8 +288,11 @@ func createChannelVolumes(channels byte, volume float32) []uint32 {
 }
 
 func parseChannelVolumes(volumes []uint32) float32 {
-	var level uint32
+	if len(volumes) == 0 {
+		return -1.0
+	}
 
+	var level uint32
 	for _, volume := range volumes {
 		level += volume
 	}

@@ -8,6 +8,7 @@ import (
 	"net"
 
 	"github.com/jfreymuth/pulse/proto"
+	"github.com/omriharel/deej/pkg/deej/util"
 	"go.uber.org/zap"
 )
 
@@ -20,7 +21,11 @@ type paSessionFinder struct {
 }
 
 func (sf *paSessionFinder) GetForegroundProcessName() (string, error) {
-	return "", nil
+	names, err := util.GetCurrentWindowProcessNames()
+	if err != nil || len(names) == 0 {
+		return "", err
+	}
+	return names[0], nil
 }
 
 func newSessionFinder(logger *zap.SugaredLogger) (SessionFinder, error) {
@@ -82,6 +87,8 @@ func (sf *paSessionFinder) GetAllSessions() ([]Session, error) {
 }
 
 func (sf *paSessionFinder) Release() error {
+	util.CleanupWindowTracker()
+
 	if err := sf.conn.Close(); err != nil {
 		sf.logger.Warnw("Failed to close PulseAudio connection", "error", err)
 		return fmt.Errorf("close PulseAudio connection: %w", err)

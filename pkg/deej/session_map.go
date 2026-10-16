@@ -258,50 +258,57 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 		return
 	}
 
-	targetFound := false
-	adjustmentFailed := false
-	containsCurrentTarget := false
+	applyTargets := func() (found bool, failed bool, hasCurrent bool) {
+		m.lock.RLock()
+		defer m.lock.RUnlock()
 
-	// acquire read lock while adjusting volumes of matching sessions
-	m.lock.RLock()
-	for _, target := range targets {
-		trimmedTarget := strings.ToLower(strings.TrimSpace(target))
-		if trimmedTarget == specialTargetTransformPrefix+specialTargetCurrentWindow {
-			containsCurrentTarget = true
-		}
-
-		resolvedTargets := m.resolveTarget(target)
-
-		for _, resolvedTarget := range resolvedTargets {
-			sessions, ok := m.m[resolvedTarget]
-			if !ok || len(sessions) == 0 {
-				continue
+		for _, target := range targets {
+			trimmedTarget := strings.ToLower(strings.TrimSpace(target))
+			if trimmedTarget == specialTargetTransformPrefix+specialTargetCurrentWindow {
+				hasCurrent = true
 			}
 
-			targetFound = true
+			resolvedTargets := m.resolveTarget(target)
 
-			for _, session := range sessions {
-				if session.GetVolume() != event.PercentValue {
-					if err := session.SetVolume(event.PercentValue); err != nil {
-						m.logger.Warnw("Failed to set target session volume", "error", err)
-						adjustmentFailed = true
+			for _, resolvedTarget := range resolvedTargets {
+				sessions, ok := m.m[resolvedTarget]
+				if !ok || len(sessions) == 0 {
+					continue
+				}
+
+				found = true
+
+				for _, session := range sessions {
+					if session.GetVolume() != event.PercentValue {
+						if err := session.SetVolume(event.PercentValue); err != nil {
+							m.logger.Warnw("Failed to set target session volume", "error", err)
+							failed = true
+						}
 					}
 				}
 			}
 		}
+
+		return found, failed, hasCurrent
 	}
-	m.lock.RUnlock()
+
+	targetFound, adjustmentFailed, containsCurrentTarget := applyTargets()
 
 	// if we still haven't found a target or the volume adjustment failed, look for the target again.
 	// processes could've opened since the last time this slider moved.
 	if !targetFound {
-		elapsed := time.Since(m.lastSessionRefresh)
+		prevRefresh := m.lastSessionRefresh
+		elapsed := time.Since(prevRefresh)
 		if containsCurrentTarget && elapsed > currentTargetForceRefreshCooldown {
 			m.refreshSessions(true)
 		} else if elapsed > missingTargetForceRefreshCooldown {
 			m.refreshSessions(true)
 		} else {
 			m.refreshSessions(false)
+		}
+
+		if !m.lastSessionRefresh.Equal(prevRefresh) {
+			applyTargets()
 		}
 	} else if adjustmentFailed {
 		m.refreshSessions(true)
@@ -334,6 +341,9 @@ func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
 
 			for _, session := range sessions {
 				volume := session.GetVolume()
+				if volume < 0 {
+					continue
+				}
 				if trimmedTarget == specialTargetTransformPrefix+specialTargetCurrentWindow {
 					preferCurrent = true
 					preferredVolumes = append(preferredVolumes, volume)
@@ -506,14 +516,25 @@ func (m *sessionMap) hasMissingMappedTargets() bool {
 		}
 		for _, target := range targets {
 			if m.targetHasSpecialTransform(target) {
-				continue
+				trimmedTarget := strings.ToLower(strings.TrimSpace(target))
+				if trimmedTarget != specialTargetTransformPrefix+specialTargetCurrentWindow {
+					continue
+				}
 			}
 			resolved := m.resolveTarget(target)
+			if len(resolved) == 0 {
+				continue
+			}
+			foundAny := false
 			for _, r := range resolved {
-				if _, ok := m.m[r]; !ok {
-					missing = true
-					return
+				if sessions, ok := m.m[r]; ok && len(sessions) > 0 {
+					foundAny = true
+					break
 				}
+			}
+			if !foundAny {
+				missing = true
+				return
 			}
 		}
 	})
