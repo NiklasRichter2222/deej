@@ -7,10 +7,33 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sync"
 	"syscall"
 
 	"go.uber.org/zap"
 )
+
+var (
+	activeWindowChangedMu sync.RWMutex
+	activeWindowChangedCb func()
+)
+
+// SetOnActiveWindowChanged registers a callback invoked asynchronously when the active foreground window changes.
+func SetOnActiveWindowChanged(cb func()) {
+	activeWindowChangedMu.Lock()
+	activeWindowChangedCb = cb
+	activeWindowChangedMu.Unlock()
+}
+
+func notifyActiveWindowChanged() {
+	activeWindowChangedMu.RLock()
+	cb := activeWindowChangedCb
+	activeWindowChangedMu.RUnlock()
+
+	if cb != nil {
+		go cb()
+	}
+}
 
 // EnsureDirExists creates the given directory path if it doesn't already exist
 func EnsureDirExists(path string) error {
@@ -52,7 +75,6 @@ func SetupCloseHandler() chan os.Signal {
 
 // GetCurrentWindowProcessNames returns the process names (including extension, if applicable)
 // of the current foreground window. This includes child processes belonging to the window.
-// This is currently only implemented for Windows
 func GetCurrentWindowProcessNames() ([]string, error) {
 	return getCurrentWindowProcessNames()
 }

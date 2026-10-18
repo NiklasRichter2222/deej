@@ -3,6 +3,8 @@ package deej
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
 
 	"go.uber.org/zap"
 
@@ -23,6 +25,7 @@ type paSession struct {
 
 	sinkInputIndex    uint32
 	sinkInputChannels byte
+	stale             uint32
 }
 
 type masterSession struct {
@@ -93,14 +96,35 @@ func newMasterSession(
 	return s
 }
 
+func (s *paSession) isStale() bool {
+	return atomic.LoadUint32(&s.stale) == 1
+}
+
+func (s *paSession) markStaleIfGone(err error) bool {
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such entity") {
+		if atomic.CompareAndSwapUint32(&s.stale, 0, 1) {
+			s.logger.Debugw("Audio session stream closed, marking stale", "sinkInputIndex", s.sinkInputIndex)
+		}
+		return true
+	}
+	return false
+}
+
 func (s *paSession) GetVolume() float32 {
+	if s.isStale() {
+		return -1.0
+	}
+
 	request := proto.GetSinkInputInfo{
 		SinkInputIndex: s.sinkInputIndex,
 	}
 	reply := proto.GetSinkInputInfoReply{}
 
 	if err := s.client.Request(&request, &reply); err != nil {
-		s.logger.Warnw("Failed to get session volume", "error", err)
+		if !s.markStaleIfGone(err) {
+			s.logger.Warnw("Failed to get session volume", "error", err)
+		}
+		return -1.0
 	}
 
 	level := parseChannelVolumes(reply.ChannelVolumes)
@@ -116,7 +140,9 @@ func (s *paSession) SetVolume(v float32) error {
 	}
 
 	if err := s.client.Request(&request, nil); err != nil {
-		s.logger.Warnw("Failed to set session volume", "error", err)
+		if !s.markStaleIfGone(err) {
+			s.logger.Warnw("Failed to set session volume", "error", err)
+		}
 		return fmt.Errorf("adjust session volume: %w", err)
 	}
 
@@ -126,13 +152,19 @@ func (s *paSession) SetVolume(v float32) error {
 }
 
 func (s *paSession) GetMute() bool {
+	if s.isStale() {
+		return false
+	}
+
 	request := proto.GetSinkInputInfo{
 		SinkInputIndex: s.sinkInputIndex,
 	}
 	reply := proto.GetSinkInputInfoReply{}
 
 	if err := s.client.Request(&request, &reply); err != nil {
-		s.logger.Warnw("Failed to get session mute", "error", err)
+		if !s.markStaleIfGone(err) {
+			s.logger.Warnw("Failed to get session mute", "error", err)
+		}
 		return false
 	}
 
@@ -146,7 +178,9 @@ func (s *paSession) SetMute(m bool) error {
 	}
 
 	if err := s.client.Request(&request, nil); err != nil {
-		s.logger.Warnw("Failed to set session mute", "error", err)
+		if !s.markStaleIfGone(err) {
+			s.logger.Warnw("Failed to set session mute", "error", err)
+		}
 		return fmt.Errorf("adjust session mute: %w", err)
 	}
 

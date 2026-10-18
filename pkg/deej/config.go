@@ -304,19 +304,19 @@ func (cc *CanonicalConfig) parseSliderMappings() (*sliderMap, *sliderMap) {
 	var intLeft, intRight map[string][]string
 
 	if hasLeft || hasRight {
-		userLeft = cc.userConfig.GetStringMapStringSlice(configKeySliderMapping + ".left")
-		userRight = cc.userConfig.GetStringMapStringSlice(configKeySliderMapping + ".right")
+		userLeft = extractSliderTargetsMap(cc.userConfig, configKeySliderMapping+".left")
+		userRight = extractSliderTargetsMap(cc.userConfig, configKeySliderMapping+".right")
 	} else {
-		flat := cc.userConfig.GetStringMapStringSlice(configKeySliderMapping)
+		flat := extractSliderTargetsMap(cc.userConfig, configKeySliderMapping)
 		userLeft = flat
 		userRight = flat
 	}
 
 	if intHasLeft || intHasRight {
-		intLeft = cc.internalConfig.GetStringMapStringSlice(configKeySliderMapping + ".left")
-		intRight = cc.internalConfig.GetStringMapStringSlice(configKeySliderMapping + ".right")
+		intLeft = extractSliderTargetsMap(cc.internalConfig, configKeySliderMapping+".left")
+		intRight = extractSliderTargetsMap(cc.internalConfig, configKeySliderMapping+".right")
 	} else {
-		flat := cc.internalConfig.GetStringMapStringSlice(configKeySliderMapping)
+		flat := extractSliderTargetsMap(cc.internalConfig, configKeySliderMapping)
 		intLeft = flat
 		intRight = flat
 	}
@@ -326,6 +326,59 @@ func (cc *CanonicalConfig) parseSliderMappings() (*sliderMap, *sliderMap) {
 
 	return leftMap, rightMap
 }
+
+func extractSliderTargetsMap(v *viper.Viper, key string) map[string][]string {
+	rawMap := v.GetStringMap(key)
+	result := make(map[string][]string, len(rawMap))
+	for k, val := range rawMap {
+		result[k] = extractTargetSlice(val)
+	}
+	return result
+}
+
+func extractTargetSlice(val interface{}) []string {
+	switch typed := val.(type) {
+	case nil:
+		return nil
+	case string:
+		if trimmed := strings.TrimSpace(typed); trimmed != "" {
+			return []string{trimmed}
+		}
+		return nil
+	case []string:
+		var out []string
+		for _, s := range typed {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	case []interface{}:
+		var out []string
+		for _, elem := range typed {
+			out = append(out, extractTargetSlice(elem)...)
+		}
+		return out
+	case map[string]interface{}:
+		var out []string
+		for _, subVal := range typed {
+			out = append(out, extractTargetSlice(subVal)...)
+		}
+		return out
+	case map[interface{}]interface{}:
+		var out []string
+		for _, subVal := range typed {
+			out = append(out, extractTargetSlice(subVal)...)
+		}
+		return out
+	default:
+		if s := strings.TrimSpace(fmt.Sprintf("%v", typed)); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+}
+
 
 func (cc *CanonicalConfig) parseColorMappings() (map[int]SliderColorConfig, map[int]SliderColorConfig, string, string, string, string) {
 	leftResult := make(map[int]SliderColorConfig)

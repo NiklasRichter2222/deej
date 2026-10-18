@@ -6,7 +6,9 @@ slider_mapping:
   left:
     0: master
     1: deej.current
-    2: wine64-preloader
+    2:
+      wine:
+        - ts3client_win64.exe
     3: discord
     4:
       - spotify

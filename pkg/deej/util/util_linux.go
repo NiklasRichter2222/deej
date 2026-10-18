@@ -39,6 +39,7 @@ var (
 	getCurrentWindowMutex      sync.Mutex
 	lastGetCurrentWindowResult []string
 	lastGetCurrentWindowCall   time.Time
+	lastResolvedWindow         activeWindowInfo
 
 	kwinStateMu         sync.RWMutex
 	currentActiveWindow activeWindowInfo
@@ -53,34 +54,61 @@ type kwinDBusReceiver struct{}
 // NotifyActiveWindow is invoked over D-Bus by our KWin script whenever the active window changes.
 func (r *kwinDBusReceiver) NotifyActiveWindow(pidStr, resourceName, resourceClass, desktopFile string) *dbus.Error {
 	pid, _ := strconv.Atoi(strings.TrimSpace(pidStr))
+	rn := strings.TrimSpace(resourceName)
+	rc := strings.TrimSpace(resourceClass)
+	df := strings.TrimSpace(desktopFile)
+
+	// Ignore empty or helper XWayland/Wine focus-proxy windows that lack window class/name metadata
+	if (pid <= 0 && rn == "" && rc == "") || (rn == "" && rc == "") {
+		return nil
+	}
+
+	nextWindow := activeWindowInfo{
+		pid:           pid,
+		resourceName:  rn,
+		resourceClass: rc,
+		desktopFile:   df,
+	}
 
 	kwinStateMu.Lock()
-	currentActiveWindow = activeWindowInfo{
-		pid:           pid,
-		resourceName:  strings.TrimSpace(resourceName),
-		resourceClass: strings.TrimSpace(resourceClass),
-		desktopFile:   strings.TrimSpace(desktopFile),
-	}
+	changed := currentActiveWindow != nextWindow
+	currentActiveWindow = nextWindow
 	kwinTrackerReady = true
 	kwinStateMu.Unlock()
 
-	// Invalidate cooldown cache so immediate slider actions reflect the newly focused window
-	getCurrentWindowMutex.Lock()
-	lastGetCurrentWindowCall = time.Time{}
-	getCurrentWindowMutex.Unlock()
+	if changed {
+		// Invalidate cooldown cache so immediate slider actions reflect the newly focused window
+		getCurrentWindowMutex.Lock()
+		lastGetCurrentWindowCall = time.Time{}
+		getCurrentWindowMutex.Unlock()
+
+		scheduleActiveWindowNotify()
+	}
 
 	return nil
+}
+
+const activeWindowNotifyDebounce = 200 * time.Millisecond
+
+var (
+	activeWindowNotifyMu    sync.Mutex
+	activeWindowNotifyTimer *time.Timer
+)
+
+// scheduleActiveWindowNotify coalesces rapid focus changes into a single callback once focus settles.
+func scheduleActiveWindowNotify() {
+	activeWindowNotifyMu.Lock()
+	defer activeWindowNotifyMu.Unlock()
+
+	if activeWindowNotifyTimer != nil {
+		activeWindowNotifyTimer.Stop()
+	}
+	activeWindowNotifyTimer = time.AfterFunc(activeWindowNotifyDebounce, notifyActiveWindowChanged)
 }
 
 func getCurrentWindowProcessNames() ([]string, error) {
 	getCurrentWindowMutex.Lock()
 	defer getCurrentWindowMutex.Unlock()
-
-	now := time.Now()
-	if !lastGetCurrentWindowCall.IsZero() && lastGetCurrentWindowCall.Add(getCurrentWindowInternalCooldown).After(now) {
-		return lastGetCurrentWindowResult, nil
-	}
-	lastGetCurrentWindowCall = now
 
 	winInfo, err := getActiveWindowInfo()
 	if err != nil {
@@ -89,10 +117,21 @@ func getCurrentWindowProcessNames() ([]string, error) {
 
 	if winInfo.pid <= 0 && winInfo.resourceName == "" && winInfo.resourceClass == "" {
 		lastGetCurrentWindowResult = nil
+		lastResolvedWindow = activeWindowInfo{}
 		return nil, nil
 	}
 
+	now := time.Now()
+	if winInfo == lastResolvedWindow && len(lastGetCurrentWindowResult) > 0 {
+		return lastGetCurrentWindowResult, nil
+	}
+	if !lastGetCurrentWindowCall.IsZero() && lastGetCurrentWindowCall.Add(getCurrentWindowInternalCooldown).After(now) && winInfo == lastResolvedWindow {
+		return lastGetCurrentWindowResult, nil
+	}
+	lastGetCurrentWindowCall = now
+
 	names := resolveProcessNamesForWindow(winInfo)
+	lastResolvedWindow = winInfo
 	lastGetCurrentWindowResult = names
 	return lastGetCurrentWindowResult, nil
 }
@@ -190,19 +229,28 @@ func loadKWinTrackerScript(conn *dbus.Conn) error {
 	selfBusName := names[0]
 
 	jsCode := fmt.Sprintf(`function reportWindow(w) {
-    if (!w) {
-        callDBus(%q, %q, %q, "NotifyActiveWindow", "0", "", "", "");
+    if (!w || w !== workspace.activeWindow || !w.active) {
+        return;
+    }
+    if (w.specialWindow || (!w.normalWindow && !w.dialog)) {
+        return;
+    }
+    var rn = String(w.resourceName || "");
+    var rc = String(w.resourceClass || "");
+    var lowerRn = rn.toLowerCase();
+    var lowerRc = rc.toLowerCase();
+    if ((rn === "" && rc === "") || lowerRn === "dimland" || lowerRc === "dimland" || lowerRn === "xembedsniproxy" || lowerRn === "plasmashell") {
         return;
     }
     callDBus(%q, %q, %q, "NotifyActiveWindow",
              String(w.pid || 0),
-             String(w.resourceName || ""),
-             String(w.resourceClass || ""),
+             rn,
+             rc,
              String(w.desktopFileName || ""));
 }
-workspace.windowActivated.connect(reportWindow);
+workspace.windowActivated.connect(function (w) { reportWindow(workspace.activeWindow); });
 reportWindow(workspace.activeWindow);
-`, selfBusName, trackerObjectPath, trackerInterfaceName, selfBusName, trackerObjectPath, trackerInterfaceName)
+`, selfBusName, trackerObjectPath, trackerInterfaceName)
 
 	jsPath := filepath.Join(os.TempDir(), fmt.Sprintf("deej-kwin-tracker-%d.js", os.Getuid()))
 	if err := ioutil.WriteFile(jsPath, []byte(jsCode), 0600); err != nil {
@@ -309,23 +357,30 @@ func resolveProcessNamesForWindow(info activeWindowInfo) []string {
 	}
 
 	if info.pid > 0 {
-		for _, n := range getProcNamesForPID(info.pid) {
+		primaryNames := getProcNamesForPID(info.pid)
+		isWineApp := false
+		for _, n := range primaryNames {
+			if strings.HasSuffix(strings.ToLower(n), ".exe") {
+				isWineApp = true
+			}
 			addCandidate(n)
 		}
 
-		// Include descendant processes (e.g., Electron/Chromium audio utility children, Wine/Proton children)
-		for _, childPID := range getDescendantPIDs(info.pid) {
-			for _, n := range getProcNamesForPID(childPID) {
-				addCandidate(n)
-			}
-		}
-
-		// If the window belongs to a child process of an app, check its parent too
-		if ppid := getParentPID(info.pid); ppid > 1 {
-			parentNames := getProcNamesForPID(ppid)
-			if len(parentNames) > 0 && !isSystemSupervisor(parentNames[0]) {
-				for _, n := range parentNames {
+		// For Wine/Proton .exe processes, the window PID is already the specific .exe process;
+		// avoid scanning /proc descendants/parents so switching between Wine and native apps is instantaneous.
+		if !isWineApp {
+			for _, childPID := range getDescendantPIDs(info.pid) {
+				for _, n := range getProcNamesForPID(childPID) {
 					addCandidate(n)
+				}
+			}
+
+			if ppid := getParentPID(info.pid); ppid > 1 {
+				parentNames := getProcNamesForPID(ppid)
+				if len(parentNames) > 0 && !isSystemSupervisor(parentNames[0]) {
+					for _, n := range parentNames {
+						addCandidate(n)
+					}
 				}
 			}
 		}
@@ -350,13 +405,24 @@ func getProcNamesForPID(pid int) []string {
 	var names []string
 	procDir := fmt.Sprintf("/proc/%d", pid)
 
-	// 1. /proc/<pid>/exe symlink gives the full untruncated binary name (matches PulseAudio application.process.binary)
+	var exeBase string
 	if exePath, err := os.Readlink(filepath.Join(procDir, "exe")); err == nil && exePath != "" {
 		exePath = strings.TrimSuffix(exePath, " (deleted)")
 		base := filepath.Base(exePath)
 		if base != "" && base != "." && base != "/" {
-			names = append(names, base)
+			exeBase = base
 		}
+	}
+
+	// If this process is a Wine/Proton loader, prefer its specific Windows .exe name over generic wine64-preloader
+	if isWineLoaderBinary(exeBase) {
+		if wineExe := extractWineExeFromPID(pid); wineExe != "" {
+			names = append(names, wineExe)
+		} else {
+			names = append(names, exeBase)
+		}
+	} else if exeBase != "" {
+		names = append(names, exeBase)
 	}
 
 	// 2. /proc/<pid>/cmdline argv[0] (and Wine .exe arguments if applicable)
@@ -367,17 +433,23 @@ func getProcNamesForPID(pid int) []string {
 				continue
 			}
 			arg := string(part)
-			// Only inspect argv[0] or arguments ending in .exe (for Wine/Proton games)
-			if i == 0 || strings.HasSuffix(strings.ToLower(arg), ".exe") {
-				// Strip flags if argv[0] was overwritten with a command line string
-				if i == 0 {
-					if spaceIdx := strings.IndexByte(arg, ' '); spaceIdx != -1 {
-						arg = arg[:spaceIdx]
-					}
+			lowerArg := strings.ToLower(arg)
+			if strings.HasSuffix(lowerArg, ".exe") {
+				normalized := strings.ReplaceAll(arg, "\\", "/")
+				base := filepath.Base(normalized)
+				if base != "" && base != "." && base != "/" && !isWineSystemWrapperExe(base) {
+					names = append(names, base)
+				}
+			} else if i == 0 {
+				// Strip flags if argv[0] was overwritten with a command line string (e.g. Chromium utility processes)
+				if exeIdx := strings.Index(lowerArg, ".exe "); exeIdx != -1 {
+					arg = arg[:exeIdx+4]
+				} else if spaceIdx := strings.IndexByte(arg, ' '); spaceIdx != -1 {
+					arg = arg[:spaceIdx]
 				}
 				normalized := strings.ReplaceAll(arg, "\\", "/")
 				base := filepath.Base(normalized)
-				if base != "" && base != "." && base != "/" {
+				if base != "" && base != "." && base != "/" && !isWineLoaderBinary(base) {
 					names = append(names, base)
 				}
 			}
@@ -387,12 +459,88 @@ func getProcNamesForPID(pid int) []string {
 	// 3. /proc/<pid>/comm (kernel comm name, up to 15 chars)
 	if commBytes, err := ioutil.ReadFile(filepath.Join(procDir, "comm")); err == nil {
 		comm := strings.TrimSpace(string(commBytes))
-		if comm != "" {
+		if comm != "" && !isWineLoaderBinary(comm) {
 			names = append(names, comm)
 		}
 	}
 
 	return names
+}
+
+// ResolveProcessBinaryName returns the effective binary name for an audio session.
+// For Wine/Proton processes (where PulseAudio reports wine64-preloader or wine-preloader),
+// it inspects /proc/<pid>/cmdline to return the actual Windows .exe name (e.g. "ts3client_win64.exe" or "Arma3_x64.exe").
+func ResolveProcessBinaryName(binaryName, pidStr string) string {
+	binaryName = strings.TrimSpace(binaryName)
+	if isWineLoaderBinary(binaryName) && pidStr != "" {
+		if pid, err := strconv.Atoi(strings.TrimSpace(pidStr)); err == nil && pid > 0 {
+			if exeName := extractWineExeFromPID(pid); exeName != "" {
+				return exeName
+			}
+		}
+	}
+	return binaryName
+}
+
+func isWineLoaderBinary(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "wine64-preloader", "wine-preloader", "wine", "wine64":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWineSystemWrapperExe(exeBase string) bool {
+	switch strings.ToLower(strings.TrimSpace(exeBase)) {
+	case "steam.exe", "start.exe", "wineboot.exe", "services.exe", "winedevice.exe",
+		"plugplay.exe", "svchost.exe", "rpcss.exe", "explorer.exe", "conhost.exe",
+		"tabtip.exe", "xalia.exe":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractWineExeFromPID(pid int) string {
+	cmdlineBytes, err := ioutil.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(cmdlineBytes) == 0 {
+		return ""
+	}
+
+	var fallbackExe string
+	parts := bytes.Split(cmdlineBytes, []byte{0})
+	for _, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+		arg := strings.TrimSpace(string(part))
+		lowerArg := strings.ToLower(arg)
+
+		// Handle either a pure .exe argument or a command string containing ".exe "
+		if !strings.HasSuffix(lowerArg, ".exe") {
+			if exeIdx := strings.Index(lowerArg, ".exe "); exeIdx != -1 {
+				arg = arg[:exeIdx+4]
+			} else {
+				continue
+			}
+		}
+
+		normalized := strings.ReplaceAll(arg, "\\", "/")
+		base := filepath.Base(normalized)
+		if base == "" || base == "." || base == "/" {
+			continue
+		}
+
+		if !isWineSystemWrapperExe(base) {
+			return base
+		}
+		if fallbackExe == "" {
+			fallbackExe = base
+		}
+	}
+
+	return fallbackExe
 }
 
 func getParentPID(pid int) int {
@@ -458,10 +606,10 @@ func getDescendantPIDs(rootPID int) []int {
 
 func isSystemSupervisor(name string) bool {
 	switch strings.ToLower(name) {
-	case "systemd", "init", "kwin_wayland", "kwin_x11", "plasmashell", "bash", "zsh", "fish", "sh", "dbus-daemon":
+	case "systemd", "init", "kwin_wayland", "kwin_x11", "plasmashell", "bash", "zsh", "fish", "sh", "dbus-daemon",
+		"pv-adverb", "srt-bwrap", "reaper", "steam", "wineserver":
 		return true
 	default:
 		return false
 	}
 }
-

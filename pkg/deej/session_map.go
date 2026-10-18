@@ -26,6 +26,7 @@ type sessionMap struct {
 
 	lastSessionRefresh time.Time
 	unmappedSessions   []Session
+	refreshMu          sync.Mutex
 
 	sliderSyncStop     chan struct{}
 	sliderSyncStopOnce sync.Once
@@ -93,11 +94,82 @@ func (m *sessionMap) initialize() error {
 	m.setupOnConfigReload()
 	m.setupOnSliderMove()
 	m.setupSliderVolumeSync()
+	m.setupOnActiveWindowChange()
+	m.setupSessionEvents()
 
 	return nil
 }
 
+// sessionEventSource is implemented by session finders that can push stream created/removed notifications.
+type sessionEventSource interface {
+	SessionEvents() <-chan struct{}
+}
+
+func (m *sessionMap) setupSessionEvents() {
+	src, ok := m.sessionFinder.(sessionEventSource)
+	if !ok || src.SessionEvents() == nil {
+		return
+	}
+	events := src.SessionEvents()
+
+	go func() {
+		const debounce = 150 * time.Millisecond
+		for {
+			select {
+			case <-events:
+			case <-m.sliderSyncStop:
+				return
+			}
+
+			// coalesce bursts (apps often open/close several streams at once)
+			timer := time.NewTimer(debounce)
+		drain:
+			for {
+				select {
+				case <-events:
+				case <-timer.C:
+					break drain
+				case <-m.sliderSyncStop:
+					timer.Stop()
+					return
+				}
+			}
+
+			m.logger.Debug("Audio streams changed, refreshing sessions")
+			m.refreshSessions(true)
+		}
+	}()
+}
+
+func (m *sessionMap) currentTargetHasSession(currentTargets []string) bool {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	for _, t := range currentTargets {
+		if sessions, ok := m.m[t]; ok && len(sessions) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *sessionMap) setupOnActiveWindowChange() {
+	util.SetOnActiveWindowChanged(func() {
+		currentTargets := m.resolveTarget(specialTargetTransformPrefix + specialTargetCurrentWindow)
+		m.logger.Debugw("Active window changed", "targets", currentTargets)
+
+		if len(currentTargets) > 0 && !m.currentTargetHasSession(currentTargets) {
+			m.refreshSessions(true)
+		}
+
+		if m.deej.config.SyncVolumes {
+			m.syncAllSliderVolumes()
+		}
+	})
+}
+
 func (m *sessionMap) release() error {
+	util.SetOnActiveWindowChanged(nil)
+
 	m.sliderSyncStopOnce.Do(func() {
 		close(m.sliderSyncStop)
 	})
@@ -151,10 +223,6 @@ func (m *sessionMap) getAndAddSessions() error {
 
 	m.logger.Infow("Got all audio sessions successfully", "sessionMap", m)
 
-	if m.deej.config.SyncVolumes {
-		m.syncAllSliderVolumes()
-	}
-
 	return nil
 }
 
@@ -191,16 +259,32 @@ func (m *sessionMap) setupOnSliderMove() {
 
 // performance: explain why force == true at every such use to avoid unintended forced refresh spams
 func (m *sessionMap) refreshSessions(force bool) {
+	if !m.refreshSessionsLocked(force) {
+		return
+	}
+
+	// sync outside the refresh lock: syncAllSliderVolumes may itself request a (rate-limited) refresh
+	if m.deej.config.SyncVolumes {
+		m.syncAllSliderVolumes()
+	}
+}
+
+func (m *sessionMap) refreshSessionsLocked(force bool) bool {
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+
 	// make sure enough time passed since the last refresh, unless force is true in which case always clear
 	if !force && m.lastSessionRefresh.Add(minTimeBetweenSessionRefreshes).After(time.Now()) {
-		return
+		return false
 	}
 
 	if err := m.getAndAddSessions(); err != nil {
 		m.logger.Warnw("Failed to re-acquire all audio sessions", "error", err)
-	} else {
-		m.logger.Debug("Re-acquired sessions successfully")
+		return false
 	}
+
+	m.logger.Debug("Re-acquired sessions successfully")
+	return true
 }
 
 // returns true if a session is not currently mapped to any slider, false otherwise
@@ -312,19 +396,26 @@ func (m *sessionMap) handleSliderMoveEvent(event SliderMoveEvent) {
 		}
 	} else if adjustmentFailed {
 		m.refreshSessions(true)
+		applyTargets()
 	}
 }
 
 // sliderVolume reports the current average volume for all sessions mapped to a slider.
 func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
+	vol, ok, _ := m.sliderVolumeWithStale(sliderIdx)
+	return vol, ok
+}
+
+func (m *sessionMap) sliderVolumeWithStale(sliderIdx int) (float32, bool, bool) {
 	targets, ok := m.deej.config.SliderMapping.get(sliderIdx)
 	if !ok || len(targets) == 0 {
-		return 0, false
+		return 0, false, false
 	}
 
 	preferredVolumes := make([]float32, 0)
 	fallbackVolumes := make([]float32, 0)
 	preferCurrent := false
+	hadStale := false
 
 	m.lock.RLock()
 	defer m.lock.RUnlock()
@@ -342,6 +433,7 @@ func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
 			for _, session := range sessions {
 				volume := session.GetVolume()
 				if volume < 0 {
+					hadStale = true
 					continue
 				}
 				if trimmedTarget == specialTargetTransformPrefix+specialTargetCurrentWindow {
@@ -360,7 +452,7 @@ func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
 	}
 
 	if len(volumes) == 0 {
-		return 0, false
+		return 0, false, hadStale
 	}
 
 	var total float32
@@ -368,7 +460,7 @@ func (m *sessionMap) sliderVolume(sliderIdx int) (float32, bool) {
 		total += volume
 	}
 
-	return total / float32(len(volumes)), true
+	return total / float32(len(volumes)), true, hadStale
 }
 
 // sliderMute reports the current mute state for all sessions mapped to a slider.
@@ -441,36 +533,48 @@ func (m *sessionMap) ToggleSliderMute(sliderIdx int) error {
 
 	m.logger.Infow("Toggling slider mute", "slider", sliderIdx, "from", currentMute, "to", targetMute)
 
-	adjustmentFailed := false
-	targetFound := false
+	applyMute := func(muteVal bool) (found bool, failed bool) {
+		m.lock.RLock()
+		defer m.lock.RUnlock()
 
-	m.lock.RLock()
-	for _, target := range targets {
-		resolvedTargets := m.resolveTarget(target)
+		for _, target := range targets {
+			resolvedTargets := m.resolveTarget(target)
 
-		for _, resolvedTarget := range resolvedTargets {
-			sessions, ok := m.m[resolvedTarget]
-			if !ok || len(sessions) == 0 {
-				continue
-			}
+			for _, resolvedTarget := range resolvedTargets {
+				sessions, ok := m.m[resolvedTarget]
+				if !ok || len(sessions) == 0 {
+					continue
+				}
 
-			targetFound = true
-			for _, session := range sessions {
-				if err := session.SetMute(targetMute); err != nil {
-					m.logger.Warnw("Failed to set target session mute", "session", session.Key(), "error", err)
-					adjustmentFailed = true
+				found = true
+				for _, session := range sessions {
+					if err := session.SetMute(muteVal); err != nil {
+						m.logger.Warnw("Failed to set target session mute", "session", session.Key(), "error", err)
+						failed = true
+					}
 				}
 			}
 		}
+
+		return found, failed
 	}
-	m.lock.RUnlock()
+
+	targetFound, adjustmentFailed := applyMute(targetMute)
 
 	if !targetFound || adjustmentFailed {
 		m.refreshSessions(true)
+		if !targetFound {
+			if refreshedMute, refreshedActive := m.sliderMute(sliderIdx); refreshedActive {
+				targetMute = !refreshedMute
+			}
+		}
+		targetFound, _ = applyMute(targetMute)
 	}
 
-	if err := m.deej.serial.SendSliderMute(sliderIdx, targetMute); err != nil {
-		m.logger.Warnw("Failed to send slider mute update", "slider", sliderIdx, "error", err)
+	if targetFound {
+		if err := m.deej.serial.SendSliderMute(sliderIdx, targetMute); err != nil {
+			m.logger.Warnw("Failed to send slider mute update", "slider", sliderIdx, "error", err)
+		}
 	}
 
 	return nil
@@ -554,20 +658,28 @@ func (m *sessionMap) syncAllSliderVolumes() {
 
 	sort.Ints(indices)
 
+	needsRefresh := false
 	for _, idx := range indices {
-		volume, ok := m.sliderVolume(idx)
+		volume, ok, hadStale := m.sliderVolumeWithStale(idx)
+		if hadStale {
+			needsRefresh = true
+		}
 		if ok {
 			if err := m.deej.serial.SendSliderDisplayValue(idx, volume); err != nil {
 				m.logger.Warnw("Failed to sync slider display", "slider", idx, "error", err)
 			}
-		}
 
-		muted, ok := m.sliderMute(idx)
-		if ok {
-			if err := m.deej.serial.SendSliderMute(idx, muted); err != nil {
-				m.logger.Warnw("Failed to sync slider mute", "slider", idx, "error", err)
+			muted, muteOk := m.sliderMute(idx)
+			if muteOk {
+				if err := m.deej.serial.SendSliderMute(idx, muted); err != nil {
+					m.logger.Warnw("Failed to sync slider mute", "slider", idx, "error", err)
+				}
 			}
 		}
+	}
+
+	if needsRefresh {
+		m.refreshSessions(false)
 	}
 }
 

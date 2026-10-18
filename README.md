@@ -91,14 +91,14 @@ This enhanced version repurposes the premium hardware of an **AVerMedia Live Str
 
 ### Requirements
 - **Windows**: Windows 10 or Windows 11 (64-bit).
-- **Linux**: Requires GTK/AppIndicator dependencies (`libgtk-3-dev`, `libappindicator3-dev`, `libwebkit2gtk-4.0-dev`).
+- **Linux**: PipeWire (`pipewire-pulse`) or PulseAudio, plus GTK/AppIndicator dependencies (`libgtk-3-dev`, `libappindicator3-dev`, `libwebkit2gtk-4.0-dev` on Debian/Ubuntu, or `gtk3`, `libappindicator-gtk3`, `webkit2gtk` on Arch/CachyOS). Active window tracking (`deej.current`) works natively on KDE Plasma (Wayland & X11 via KWin D-Bus) with `kdotool`/`xdotool` fallbacks.
 
 ### Running the Pre-built Client
 
-1. Download or copy `deej.exe` (or `deej-release.exe`) and [`config.yaml`](./config.yaml) into the same folder.
+1. Download or copy `deej.exe` (Windows) or `deej-release` / `deej-dev` (Linux) and [`config.yaml`](./config.yaml) into the same folder.
 2. Plug in your Deej controller via USB.
-3. Open `config.yaml` to confirm your `com_port` (e.g. `COM8`), or configure it through the tray UI.
-4. Run `deej.exe`. A Deej icon will appear in your system tray.
+3. Open `config.yaml` to confirm your `com_port` (e.g. `COM8` on Windows, `/dev/ttyACM0` on Linux), or configure it through the tray UI.
+4. Run the client (`deej.exe` or `./deej-release`). A Deej icon will appear in your system tray.
 5. *(Optional)* To run on Windows startup, create a shortcut to `deej.exe` and place it in:
    ```
    %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
@@ -140,15 +140,17 @@ slider_mapping:
   left:
     0: master
     1: deej.current
-    2: ts3client_win64.exe
-    3: discord.exe
+    2:
+      wine:
+        - ts3client_win64.exe
+    3: discord
     4:
-      - spotify.exe
-      - youtube-music-desktop-app.exe
+      - spotify
+      - youtube-music-desktop-app
     5: mic
   right:
     0: master
-    1: deej.current
+    1: brave
     2: ts3client_win64.exe
     3: discord.exe
     4:
@@ -162,7 +164,7 @@ invert_sliders: false
 noise_reduction: default
 
 # --- Connection Settings ---
-com_port: COM8
+com_port: /dev/ttyACM0
 baud_rate: 9600
 
 # --- Bidirectional Sync Settings ---
@@ -226,7 +228,7 @@ color_mapping:
 | `default_brightness` | `float` | Startup LED brightness level (`0.0` to `1.0`, e.g. `0.15` for 15%). |
 | `invert_sliders` | `bool` | Set `true` to invert rotation/volume direction. |
 | `noise_reduction` | `string` | Jitter filter strength: `low`, `default`, or `high`. |
-| `com_port` | `string` | Serial port used by the controller (e.g. `COM8` on Windows, `/dev/ttyUSB0` on Linux). |
+| `com_port` | `string` | Serial port used by the controller (e.g. `COM8` on Windows, `/dev/ttyACM0` or `/dev/ttyUSB0` on Linux). |
 | `baud_rate` | `int` | Serial communication baud rate (default: `9600`). |
 | `send_on_startup` | `bool` | Sends initial PC volume levels and lighting config to the controller on launch. |
 | `sync_volumes` | `bool` | Continuously mirrors PC-side volume and mute changes back to the hardware. |
@@ -236,9 +238,15 @@ color_mapping:
 #### Special Mapping Targets
 - `master`: System master playback audio volume.
 - `mic`: Default microphone input recording volume.
-- `deej.current`: Controls whichever window is currently in the active foreground.
+- `deej.current`: Controls whichever window is currently in the active foreground (supported on Windows and Linux KDE Plasma Wayland/X11).
 - `deej.unmapped`: Catch-all for any running audio application not bound to another channel.
 - `system`: Windows System Sounds mixer channel.
+- `Wine / Proton .exe Targets (Linux)`: Audio streams running under Wine or Proton (`wine64-preloader` / `wine-preloader`) are automatically resolved to their underlying Windows `.exe` binary (e.g. `ts3client_win64.exe` or `arma3_x64.exe`), even when multiple `.exe` apps share the same Proton prefix. You can map them either directly (`2: ts3client_win64.exe`) or grouped under `wine:`:
+  ```yaml
+  2:
+    wine:
+      - ts3client_win64.exe
+  ```
 - `Audio Device Name`: Exact name of an output or input endpoint, e.g. `Speakers (Realtek Audio)`.
 - `List of Process Names`: Bind multiple executables to a single slider (e.g. a list of games or media players).
 
@@ -340,7 +348,15 @@ The desktop client is written in Go. To compile it from source:
    git clone https://github.com/NiklasRichter2222/deej.git
    cd deej
    ```
-2. Build using the provided Windows batch scripts:
+2. **Linux**: Build using the provided shell scripts:
+   ```bash
+   # Development build (outputs ./deej-dev with verbose console logging)
+   ./pkg/deej/scripts/linux/build-dev.sh
+
+   # Release build (outputs ./deej-release)
+   ./pkg/deej/scripts/linux/build-release.sh
+   ```
+3. **Windows**: Build using the provided batch scripts:
    ```cmd
    pkg\deej\scripts\windows\build-all.bat
    ```

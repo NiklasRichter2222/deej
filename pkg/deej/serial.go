@@ -624,8 +624,12 @@ func (sio *SerialIO) SendSliderDisplayValue(sliderIdx int, percent float32) erro
 
 	position = util.NormalizeScalar(position)
 
-	// Avoid feedback loop: don't echo back if the volume is very close to the last received value
-	if len(sio.currentSliderPercentValues) > sliderIdx {
+	// Avoid feedback loop: don't echo back if the user just moved this physical slider
+	sio.lastReceivedSliderMoveTimeMu.Lock()
+	lastMove, hasMove := sio.lastReceivedSliderMoveTime[sliderIdx]
+	sio.lastReceivedSliderMoveTimeMu.Unlock()
+
+	if hasMove && time.Since(lastMove) < 600*time.Millisecond && len(sio.currentSliderPercentValues) > sliderIdx {
 		diff := float64(percent - sio.currentSliderPercentValues[sliderIdx])
 		if diff < 0 {
 			diff = -diff
@@ -651,6 +655,16 @@ func (sio *SerialIO) SendSliderDisplayValue(sliderIdx int, percent float32) erro
 	if err := sio.writeSerialLine(payload); err != nil {
 		return err
 	}
+
+	// The controller streams its state every ~15ms, so lines already in flight still carry the
+	// old position. Suppress move events briefly; handleLine keeps updating its cached values
+	// meanwhile, so it settles on the echoed position without firing a false move event.
+	const displayEchoSuppress = 120 * time.Millisecond
+	sio.suppressSliderEventsUntilMu.Lock()
+	if until := time.Now().Add(displayEchoSuppress); until.After(sio.suppressSliderEventsUntil) {
+		sio.suppressSliderEventsUntil = until
+	}
+	sio.suppressSliderEventsUntilMu.Unlock()
 
 	sio.lastSentSliderPositionsMu.Lock()
 	sio.lastSentSliderPositions[sliderIdx] = position
