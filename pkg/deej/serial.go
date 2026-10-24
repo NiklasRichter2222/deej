@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -18,6 +19,29 @@ import (
 
 	"github.com/omriharel/deej/pkg/deej/util"
 )
+
+type serialSessionReader struct {
+	r           io.Reader
+	stopChannel <-chan struct{}
+	sessionDone <-chan struct{}
+}
+
+func (sr *serialSessionReader) Read(p []byte) (int, error) {
+	for {
+		select {
+		case <-sr.stopChannel:
+			return 0, io.EOF
+		case <-sr.sessionDone:
+			return 0, io.EOF
+		default:
+		}
+
+		n, err := sr.r.Read(p)
+		if n > 0 || err != nil {
+			return n, err
+		}
+	}
+}
 
 // SerialIO provides a deej-aware abstraction layer to managing serial I/O
 type SerialIO struct {
@@ -112,10 +136,7 @@ func (sio *SerialIO) triggerReconnect() {
 
 // manageConnection runs the supervisor loop that connects and auto-reconnects
 func (sio *SerialIO) manageConnection() {
-	minimumReadSize := 0
-	if util.Linux() {
-		minimumReadSize = 1
-	}
+	altPortOffset := 0
 
 	for {
 		select {
@@ -125,19 +146,21 @@ func (sio *SerialIO) manageConnection() {
 		default:
 		}
 
-		portName := sio.deej.config.ConnectionInfo.COMPort
+		portName := sio.resolvePortCandidate(sio.deej.config.ConnectionInfo.COMPort, altPortOffset)
 		baudRate := uint(sio.deej.config.ConnectionInfo.BaudRate)
 
 		sio.connOptions = serial.OpenOptions{
-			PortName:        portName,
-			BaudRate:        baudRate,
-			DataBits:        8,
-			StopBits:        1,
-			MinimumReadSize: uint(minimumReadSize),
+			PortName:              portName,
+			BaudRate:              baudRate,
+			DataBits:              8,
+			StopBits:              1,
+			MinimumReadSize:       0,
+			InterCharacterTimeout: 100,
 		}
 
 		conn, err := serial.Open(sio.connOptions)
 		if err != nil {
+			altPortOffset++
 			sio.logger.Debugw("Waiting to connect to serial port",
 				"comPort", portName,
 				"baudRate", baudRate,
@@ -157,6 +180,7 @@ func (sio *SerialIO) manageConnection() {
 		sio.connMu.Lock()
 		sio.conn = conn
 		sio.connected = true
+		sio.lastKnownNumSliders = 0
 		sio.connMu.Unlock()
 
 		sio.resetSliderDisplayCache()
@@ -166,7 +190,12 @@ func (sio *SerialIO) manageConnection() {
 		}
 
 		// Run active connection session until disconnection, config change, or stop
-		sio.runSession(namedLogger, conn)
+		switchedPort := sio.runSession(namedLogger, conn, portName)
+		if switchedPort {
+			altPortOffset++
+		} else {
+			altPortOffset = 0
+		}
 
 		// Close connection cleanly after session termination
 		sio.closeConnection()
@@ -179,12 +208,56 @@ func (sio *SerialIO) manageConnection() {
 	}
 }
 
-func (sio *SerialIO) runSession(logger *zap.SugaredLogger, conn io.ReadWriteCloser) {
+func (sio *SerialIO) resolvePortCandidate(configuredPort string, offset int) string {
+	if !util.Linux() || offset == 0 {
+		return configuredPort
+	}
+	if !strings.HasPrefix(configuredPort, "/dev/ttyACM") && !strings.HasPrefix(configuredPort, "/dev/ttyUSB") {
+		return configuredPort
+	}
+
+	candidates := sio.linuxCandidatePorts(configuredPort)
+	if len(candidates) == 0 {
+		return configuredPort
+	}
+	return candidates[offset%len(candidates)]
+}
+
+func (sio *SerialIO) linuxCandidatePorts(configuredPort string) []string {
+	seen := map[string]bool{}
+	var result []string
+
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+
+	if util.FileExists(configuredPort) {
+		add(configuredPort)
+	}
+	for _, pattern := range []string{"/dev/ttyACM*", "/dev/ttyUSB*"} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		sort.Strings(matches)
+		for _, m := range matches {
+			add(m)
+		}
+	}
+	if len(result) == 0 {
+		return []string{configuredPort}
+	}
+	return result
+}
+
+func (sio *SerialIO) runSession(logger *zap.SugaredLogger, conn io.ReadWriteCloser, portName string) bool {
 	runtime.LockOSThread()
 	_ = ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 	defer runtime.UnlockOSThread()
 
-	connReader := bufio.NewReader(conn)
 	lineChannel := make(chan string, 32)
 	readErrChannel := make(chan error, 1)
 	sessionDone := make(chan struct{})
@@ -196,6 +269,12 @@ func (sio *SerialIO) runSession(logger *zap.SugaredLogger, conn io.ReadWriteClos
 		})
 	}
 	defer closeSession()
+
+	connReader := bufio.NewReader(&serialSessionReader{
+		r:           conn,
+		stopChannel: sio.stopChannel,
+		sessionDone: sessionDone,
+	})
 
 	// Line reader goroutine
 	go func() {
@@ -222,6 +301,11 @@ func (sio *SerialIO) runSession(logger *zap.SugaredLogger, conn io.ReadWriteClos
 	heartbeatTicker := time.NewTicker(1000 * time.Millisecond)
 	defer heartbeatTicker.Stop()
 
+	// If multiple serial ports exist on Linux and this port yields no slider data within 3s,
+	// try the next candidate port (e.g. when another ESP32 device grabbed /dev/ttyACM0).
+	probeTimer := time.NewTimer(3000 * time.Millisecond)
+	defer probeTimer.Stop()
+
 	firstLineReceived := false
 
 	// Initial configuration and volumes sync shortly after connection
@@ -236,15 +320,21 @@ func (sio *SerialIO) runSession(logger *zap.SugaredLogger, conn io.ReadWriteClos
 	for {
 		select {
 		case <-sio.stopChannel:
-			return
+			return false
 
 		case <-sio.reconnectSignal:
 			logger.Info("Reconnection requested, recycling connection")
-			return
+			return false
 
 		case err := <-readErrChannel:
 			logger.Warnw("Serial read error / disconnected", "error", err)
-			return
+			return false
+
+		case <-probeTimer.C:
+			if util.Linux() && sio.lastKnownNumSliders == 0 && len(sio.linuxCandidatePorts(portName)) > 1 {
+				logger.Infow("No slider data received on serial port, trying next available port", "comPort", portName)
+				return true
+			}
 
 		case <-heartbeatTicker.C:
 			if sio.IsConnected() {
@@ -332,22 +422,30 @@ func (sio *SerialIO) setupOnConfigReload() {
 
 func (sio *SerialIO) closeConnection() {
 	sio.connMu.Lock()
-	defer sio.connMu.Unlock()
-
-	sio.writeMu.Lock()
-	defer sio.writeMu.Unlock()
-
-	if sio.conn != nil {
-		if err := sio.conn.Close(); err != nil {
-			sio.logger.Debugw("Serial connection closed with error", "error", err)
-		} else {
-			sio.logger.Debug("Serial connection closed")
-		}
-		sio.conn = nil
-	}
-
+	conn := sio.conn
+	sio.conn = nil
 	sio.connected = false
+	sio.connMu.Unlock()
+
 	sio.resetSliderDisplayCache()
+
+	if conn != nil {
+		closeDone := make(chan error, 1)
+		go func() {
+			closeDone <- conn.Close()
+		}()
+
+		select {
+		case err := <-closeDone:
+			if err != nil {
+				sio.logger.Debugw("Serial connection closed with error", "error", err)
+			} else {
+				sio.logger.Debug("Serial connection closed")
+			}
+		case <-time.After(300 * time.Millisecond):
+			sio.logger.Debug("Serial connection close timed out in background")
+		}
+	}
 }
 
 func (sio *SerialIO) handleLine(logger *zap.SugaredLogger, line string) {

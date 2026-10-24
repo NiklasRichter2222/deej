@@ -30,7 +30,7 @@ invert_sliders: false
 noise_reduction: default
 
 # --- Connection Settings ---
-com_port: /dev/ttyACM0
+com_port: /dev/ttyACM*
 baud_rate: 9600
 
 # --- Bidirectional Sync Settings ---

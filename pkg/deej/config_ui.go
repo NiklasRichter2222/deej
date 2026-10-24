@@ -748,15 +748,37 @@ func listSerialPortsLinux() []configUIPortOption {
 		description := readFirstExisting(
 			filepath.Join("/sys/class/tty", base, "device/interface"),
 			filepath.Join("/sys/class/tty", base, "device/product"),
+			filepath.Join("/sys/class/tty", base, "device/../product"),
+		)
+		serialNum := readFirstExisting(
+			filepath.Join("/sys/class/tty", base, "device/../serial"),
 		)
 		if description == "" {
 			description = base
+		}
+		if serialNum != "" {
+			description = fmt.Sprintf("%s (%s)", description, serialNum)
 		}
 
 		ports = append(ports, configUIPortOption{
 			Port:        path,
 			Description: description,
 		})
+	}
+
+	if byIDMatches, err := filepath.Glob("/dev/serial/by-id/*"); err == nil {
+		sort.Strings(byIDMatches)
+		for _, path := range byIDMatches {
+			target, err := filepath.EvalSymlinks(path)
+			desc := filepath.Base(path)
+			if err == nil && target != "" {
+				desc = fmt.Sprintf("%s -> %s", filepath.Base(path), filepath.Base(target))
+			}
+			ports = append(ports, configUIPortOption{
+				Port:        path,
+				Description: desc,
+			})
+		}
 	}
 
 	return ports

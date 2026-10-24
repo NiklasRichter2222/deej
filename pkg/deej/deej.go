@@ -5,6 +5,7 @@ package deej
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -51,7 +52,7 @@ func NewDeej(logger *zap.SugaredLogger, verbose bool) (*Deej, error) {
 		logger:      logger,
 		notifier:    notifier,
 		config:      config,
-		stopChannel: make(chan bool),
+		stopChannel: make(chan bool, 1),
 		verbose:     verbose,
 	}
 
@@ -130,9 +131,17 @@ func (d *Deej) setupInterruptHandler() {
 	interruptChannel := util.SetupCloseHandler()
 
 	go func() {
-		signal := <-interruptChannel
-		d.logger.Debugw("Interrupted", "signal", signal)
-		d.signalStop()
+		first := true
+		for signal := range interruptChannel {
+			d.logger.Debugw("Interrupted", "signal", signal)
+			if first {
+				first = false
+				d.signalStop()
+			} else {
+				d.logger.Info("Received second interrupt signal, forcing exit")
+				os.Exit(1)
+			}
+		}
 	}()
 }
 
@@ -153,18 +162,30 @@ func (d *Deej) run() {
 	<-d.stopChannel
 	d.logger.Debug("Stop channel signaled, terminating")
 
-	if err := d.stop(); err != nil {
-		d.logger.Warnw("Failed to stop deej", "error", err)
-		os.Exit(1)
-	} else {
-		// exit with 0
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- d.stop()
+	}()
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			d.logger.Warnw("Failed to stop deej", "error", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	case <-time.After(2 * time.Second): // 2 seconds safety timeout
+		d.logger.Warn("Timed out waiting for components to stop, forcing exit")
 		os.Exit(0)
 	}
 }
 
 func (d *Deej) signalStop() {
 	d.logger.Debug("Signalling stop channel")
-	d.stopChannel <- true
+	select {
+	case d.stopChannel <- true:
+	default:
+	}
 }
 
 func (d *Deej) stop() error {

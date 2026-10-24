@@ -112,7 +112,7 @@ func NewConfig(logger *zap.SugaredLogger, notifier Notifier) (*CanonicalConfig, 
 		PageButtonRightColor:    "#ffffff",
 		PageButtonRightOffColor: "#000000",
 		reloadConsumers:         []chan bool{},
-		stopWatcherChannel:      make(chan bool),
+		stopWatcherChannel:      make(chan bool, 1),
 	}
 
 	userConfig := viper.New()
@@ -221,7 +221,10 @@ func (cc *CanonicalConfig) WatchConfigFileChanges() {
 }
 
 func (cc *CanonicalConfig) StopWatchingConfigFile() {
-	cc.stopWatcherChannel <- true
+	select {
+	case cc.stopWatcherChannel <- true:
+	default:
+	}
 }
 
 func (cc *CanonicalConfig) populateFromVipers() error {
@@ -502,15 +505,22 @@ func (cc *CanonicalConfig) onConfigReloaded() {
 	}
 }
 
-func (cc *CanonicalConfig) captureConfigFingerprint() {
+func (cc *CanonicalConfig) computeConfigFingerprint() string {
 	content, err := ioutil.ReadFile(userConfigFilepath)
 	if err != nil {
-		cc.logger.Debugw("Failed to capture config fingerprint", "error", err)
-		return
+		cc.logger.Debugw("Failed to read config for fingerprint", "error", err)
+		return ""
 	}
 
 	sum := sha1.Sum(content)
-	fingerprint := hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:])
+}
+
+func (cc *CanonicalConfig) captureConfigFingerprint() {
+	fingerprint := cc.computeConfigFingerprint()
+	if fingerprint == "" {
+		return
+	}
 
 	cc.configFingerprintMu.Lock()
 	cc.configFingerprint = fingerprint
@@ -518,7 +528,7 @@ func (cc *CanonicalConfig) captureConfigFingerprint() {
 }
 
 func (cc *CanonicalConfig) configChangedSince(previous string) bool {
-	current := cc.currentConfigFingerprint()
+	current := cc.computeConfigFingerprint()
 
 	if previous == "" || current == "" {
 		return true

@@ -132,15 +132,22 @@ Color pageButtonOffColor[2] = {COLOR_OFF, COLOR_OFF};
 // Connection State
 bool isConnected = false;
 unsigned long disconnectedStartTime = 0;
+unsigned long lastHostActivityTime = 0;
+bool hasHostActivity = false;
 const unsigned long DISCONNECT_DEBOUNCE_MS = 5000;
 
 unsigned long lastDeejSendTime = 0;
+char serialLineBuf[128];
+size_t serialLineLen = 0;
 
 // --- Function Prototypes ---
+void initLedDrivers();
 void setSingleLedColor(int ledNum, const Color &c);
 void renderLEDs();
 void triggerMaxBlink();
 void processDeejSerial();
+void handleDeejCommand(String &line);
+void sendSliderPayload();
 Color parseHexColor(String hexStr);
 Color hsvToRgb(uint8_t h, uint8_t s, uint8_t v);
 
@@ -156,6 +163,22 @@ void triggerMaxBlink() {
   maxBlinkEndTime = millis() + 450;
 }
 
+void initLedDrivers() {
+  for (int bank = 0; bank < 2; bank++) {
+    digitalWrite(MUX_SELECT_PIN, bank == 0 ? LOW : HIGH);
+    for (byte address : LED_CHIP_ADDRESSES) {
+      Wire.beginTransmission(address);
+      Wire.write(DEVICE_CONFIG0);
+      Wire.write(0x40);
+      Wire.endTransmission();
+    }
+  }
+  digitalWrite(MUX_SELECT_PIN, LOW);
+  for (int i = 1; i <= TOTAL_LEDS; i++) {
+    ledHardwareState[i] = {255, 255, 255}; // force full hardware write
+  }
+}
+
 // --- Main Setup ---
 void setup() {
   Serial.begin(9600);
@@ -163,6 +186,7 @@ void setup() {
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(400000);
+  Wire.setTimeOut(20);
 
   pinMode(MUX_SELECT_PIN, OUTPUT);
 
@@ -177,19 +201,9 @@ void setup() {
   // Initialize LED driver chips & clear buffers
   for (int i = 1; i <= TOTAL_LEDS; i++) {
     ledBuffer[i] = COLOR_OFF;
-    ledHardwareState[i] = {255, 255, 255}; // dummy initial state to force first write
   }
 
-  for (int bank = 0; bank < 2; bank++) {
-    digitalWrite(MUX_SELECT_PIN, bank == 0 ? LOW : HIGH);
-    for (byte address : LED_CHIP_ADDRESSES) {
-      Wire.beginTransmission(address);
-      Wire.write(DEVICE_CONFIG0);
-      Wire.write(0x40);
-      Wire.endTransmission();
-    }
-  }
-  digitalWrite(MUX_SELECT_PIN, LOW);
+  initLedDrivers();
   for (int i = 1; i <= TOTAL_LEDS; i++) {
     setSingleLedColor(i, COLOR_OFF);
   }
@@ -220,21 +234,23 @@ void loop() {
   processDeejSerial();
 
   bool serialOpen = (bool)Serial;
+  bool heartbeatFresh = hasHostActivity && (millis() - lastHostActivityTime < DISCONNECT_DEBOUNCE_MS);
 
-  if (serialOpen) {
+  if (serialOpen && heartbeatFresh) {
     disconnectedStartTime = 0;
     if (!isConnected) {
-      // Reconnected
+      // Reconnected: re-initialize LED driver chips in case of power/I2C glitch
       isConnected = true;
+      initLedDrivers();
       renderLEDs();
     }
   } else {
-    // Serial is not open
+    // Either USB serial is closed or host heartbeat timed out
     if (disconnectedStartTime == 0) {
       disconnectedStartTime = millis();
-    } else if (millis() - disconnectedStartTime >= DISCONNECT_DEBOUNCE_MS) {
+    } else if (!serialOpen ? (millis() - disconnectedStartTime >= DISCONNECT_DEBOUNCE_MS) : !heartbeatFresh) {
       if (isConnected) {
-        // Confirmed disconnected after 5 seconds: Turn off all LEDs
+        // Confirmed disconnected: Turn off all LEDs
         isConnected = false;
         isMaxBlinking = false;
         for (int i = 1; i <= TOTAL_LEDS; i++) {
@@ -246,6 +262,11 @@ void loop() {
   }
 
   if (!isConnected) {
+    // While USB serial is open, send periodic slider state so deej can detect sliders and start sending HB
+    if (serialOpen && millis() - lastDeejSendTime >= 250) {
+      lastDeejSendTime = millis();
+      sendSliderPayload();
+    }
     delay(10);
     return;
   }
@@ -386,110 +407,160 @@ void loop() {
   // Send continuous slider updates to Deej
   if (millis() - lastDeejSendTime >= DEEJ_SEND_INTERVAL) {
     lastDeejSendTime = millis();
-    String payload = "";
-    for (int p = 0; p < 2; p++) {
-      for (int i = 0; i < numEncoders; i++) {
-        long mappedValue =
-            map(encoders[i].lastDetentPosition[p], 0, MAX_ENCODER_VALUE, 0, 1023);
-        payload += String(mappedValue);
-        if (p < 1 || i < numEncoders - 1)
-          payload += "|";
+    sendSliderPayload();
+  }
+}
+
+void sendSliderPayload() {
+  if (Serial.availableForWrite() < 64) {
+    return;
+  }
+  char payload[96];
+  int pos = 0;
+  for (int p = 0; p < 2; p++) {
+    for (int i = 0; i < numEncoders; i++) {
+      long mappedValue =
+          map(encoders[i].lastDetentPosition[p], 0, MAX_ENCODER_VALUE, 0, 1023);
+      if (p < 1 || i < numEncoders - 1) {
+        pos += snprintf(payload + pos, sizeof(payload) - pos, "%ld|", mappedValue);
+      } else {
+        pos += snprintf(payload + pos, sizeof(payload) - pos, "%ld\r\n", mappedValue);
       }
     }
-    Serial.println(payload);
   }
+  Serial.write((const uint8_t *)payload, pos);
 }
 
 // --- Deej Serial Parser ---
 void processDeejSerial() {
   while (Serial.available()) {
-    String line = Serial.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0)
-      continue;
-
-    if (line.equalsIgnoreCase("HB") || line.equalsIgnoreCase("PING")) {
+    char c = (char)Serial.read();
+    if (c == '\r') {
       continue;
     }
+    if (c == '\n') {
+      serialLineBuf[serialLineLen] = '\0';
+      if (serialLineLen > 0) {
+        String line(serialLineBuf);
+        line.trim();
+        if (line.length() > 0) {
+          handleDeejCommand(line);
+        }
+      }
+      serialLineLen = 0;
+    } else if (serialLineLen < sizeof(serialLineBuf) - 1) {
+      serialLineBuf[serialLineLen++] = c;
+    } else {
+      // Overflow protection: reset buffer
+      serialLineLen = 0;
+    }
+  }
+}
 
-    if (line.startsWith("V:")) {
-      int c1 = line.indexOf(':');
-      int c2 = line.indexOf(':', c1 + 1);
-      if (c1 != -1 && c2 != -1) {
-        int idx = line.substring(c1 + 1, c2).toInt();
-        float percent = line.substring(c2 + 1).toFloat();
-        int p = idx / numEncoders;
-        int e = idx % numEncoders;
-        if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
-          long newPos = round(percent * MAX_ENCODER_VALUE);
-          encoders[e].lastDetentPosition[p] = newPos;
-          if (currentPage == p) {
-            encoders[e].encoder->setPosition(newPos);
-          }
-          renderLEDs();
+void handleDeejCommand(String &line) {
+  if (line.equalsIgnoreCase("HB") || line.equalsIgnoreCase("PING")) {
+    lastHostActivityTime = millis();
+    hasHostActivity = true;
+    return;
+  }
+
+  if (line.startsWith("V:")) {
+    lastHostActivityTime = millis();
+    hasHostActivity = true;
+    int c1 = line.indexOf(':');
+    int c2 = line.indexOf(':', c1 + 1);
+    if (c1 != -1 && c2 != -1) {
+      int idx = line.substring(c1 + 1, c2).toInt();
+      float percent = line.substring(c2 + 1).toFloat();
+      int p = idx / numEncoders;
+      int e = idx % numEncoders;
+      if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
+        long newPos = round(percent * MAX_ENCODER_VALUE);
+        encoders[e].lastDetentPosition[p] = newPos;
+        if (currentPage == p) {
+          encoders[e].encoder->setPosition(newPos);
         }
-      }
-    } else if (line.startsWith("M:")) {
-      int c1 = line.indexOf(':');
-      int c2 = line.indexOf(':', c1 + 1);
-      if (c1 != -1 && c2 != -1) {
-        int idx = line.substring(c1 + 1, c2).toInt();
-        int muted = line.substring(c2 + 1).toInt();
-        int p = idx / numEncoders;
-        int e = idx % numEncoders;
-        if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
-          encoders[e].isMuted[p] = (muted == 1);
-          renderLEDs();
-        }
-      }
-    } else if (line.startsWith("CP:")) {
-      int c1 = line.indexOf(':');
-      int c2 = line.indexOf(':', c1 + 1);
-      int c3 = line.indexOf(':', c2 + 1);
-      if (c1 != -1 && c2 != -1) {
-        String pStr = line.substring(c1 + 1, c2);
-        int p = (pStr == "1" || pStr.equalsIgnoreCase("R") || pStr.equalsIgnoreCase("right")) ? 1 : 0;
-        String activeHex = (c3 != -1) ? line.substring(c2 + 1, c3) : line.substring(c2 + 1);
-        String offHex = (c3 != -1) ? line.substring(c3 + 1) : "#000000";
-        pageButtonColor[p] = parseHexColor(activeHex);
-        pageButtonOffColor[p] = parseHexColor(offHex);
         renderLEDs();
       }
-    } else if (line.startsWith("C:")) {
-      int c1 = line.indexOf(':');
-      int c2 = line.indexOf(':', c1 + 1);
-      int c3 = line.indexOf(':', c2 + 1);
-
-      if (c1 != -1 && c2 != -1 && c3 != -1) {
-        int idx = line.substring(c1 + 1, c2).toInt();
-        int p = idx / numEncoders;
-        int e = idx % numEncoders;
-        if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
-          pageZeroColor[p][e] = parseHexColor(line.substring(c2 + 1, c3));
-          pageFullColor[p][e] = parseHexColor(line.substring(c3 + 1));
-          renderLEDs();
-        }
+    }
+  } else if (line.startsWith("M:")) {
+    lastHostActivityTime = millis();
+    hasHostActivity = true;
+    int c1 = line.indexOf(':');
+    int c2 = line.indexOf(':', c1 + 1);
+    if (c1 != -1 && c2 != -1) {
+      int idx = line.substring(c1 + 1, c2).toInt();
+      int muted = line.substring(c2 + 1).toInt();
+      int p = idx / numEncoders;
+      int e = idx % numEncoders;
+      if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
+        encoders[e].isMuted[p] = (muted == 1);
+        renderLEDs();
       }
-    } else if (line.startsWith("BR:")) {
-      String brStr = line.substring(3);
-      brStr.trim();
-      float val = brStr.toFloat();
-      if (val > 1.0f) val = val / 100.0f;
-      if (val < 0.0f) val = 0.0f;
-      if (val > 1.0f) val = 1.0f;
-      globalBrightness = val;
-      renderLEDs();
-    } else if (line.startsWith("B:")) {
-      String hexStr = line.substring(2);
-      hexStr.trim();
-      if (hexStr.equalsIgnoreCase("rgb")) {
-        isRainbowMode = true;
-      } else {
-        isRainbowMode = false;
-        backgroundColor = parseHexColor(hexStr);
-      }
+    }
+  } else if (line.startsWith("CP:")) {
+    lastHostActivityTime = millis();
+    hasHostActivity = true;
+    int c1 = line.indexOf(':');
+    int c2 = line.indexOf(':', c1 + 1);
+    int c3 = line.indexOf(':', c2 + 1);
+    if (c1 != -1 && c2 != -1) {
+      String pStr = line.substring(c1 + 1, c2);
+      int p = (pStr == "1" || pStr.equalsIgnoreCase("R") || pStr.equalsIgnoreCase("right")) ? 1 : 0;
+      String activeHex = (c3 != -1) ? line.substring(c2 + 1, c3) : line.substring(c2 + 1);
+      String offHex = (c3 != -1) ? line.substring(c3 + 1) : "#000000";
+      pageButtonColor[p] = parseHexColor(activeHex);
+      pageButtonOffColor[p] = parseHexColor(offHex);
       renderLEDs();
     }
+  } else if (line.startsWith("C:")) {
+    lastHostActivityTime = millis();
+    hasHostActivity = true;
+    int c1 = line.indexOf(':');
+    int c2 = line.indexOf(':', c1 + 1);
+    int c3 = line.indexOf(':', c2 + 1);
+
+    if (c1 != -1 && c2 != -1 && c3 != -1) {
+      int idx = line.substring(c1 + 1, c2).toInt();
+      int p = idx / numEncoders;
+      int e = idx % numEncoders;
+      if (p >= 0 && p < 2 && e >= 0 && e < numEncoders) {
+        pageZeroColor[p][e] = parseHexColor(line.substring(c2 + 1, c3));
+        pageFullColor[p][e] = parseHexColor(line.substring(c3 + 1));
+        renderLEDs();
+      }
+    }
+  } else if (line.startsWith("BR:")) {
+    lastHostActivityTime = millis();
+    hasHostActivity = true;
+    String brStr = line.substring(3);
+    brStr.trim();
+    float val = brStr.toFloat();
+    if (val > 1.0f) val = val / 100.0f;
+    if (val < 0.0f) val = 0.0f;
+    if (val > 1.0f) val = 1.0f;
+    globalBrightness = val;
+    if (!isConnected) {
+      isConnected = true;
+    }
+    initLedDrivers();
+    renderLEDs();
+  } else if (line.startsWith("B:")) {
+    lastHostActivityTime = millis();
+    hasHostActivity = true;
+    String hexStr = line.substring(2);
+    hexStr.trim();
+    if (hexStr.equalsIgnoreCase("rgb")) {
+      isRainbowMode = true;
+    } else {
+      isRainbowMode = false;
+      backgroundColor = parseHexColor(hexStr);
+    }
+    if (!isConnected) {
+      isConnected = true;
+    }
+    initLedDrivers();
+    renderLEDs();
   }
 }
 
